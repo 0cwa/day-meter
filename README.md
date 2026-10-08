@@ -11,7 +11,7 @@ A small Android widget app that tracks how much of your configured day has passe
 - Links checkpoints into habit chains that wait for the previous step to be Done, with an optional delay
 - Lets you complete or skip today’s checkpoint in its editor, even without notifications
 - Shows checkpoint markers on the progress bar and sends gentle, silent, vibration-only, or prominent reminders
-- Supports Done, configurable Snooze (5–60 minutes), and Skip today notification actions
+- Supports Done, Snooze with editable shortcuts and custom minutes (1–1440), and Skip today notification actions
 - Offers lock-screen privacy and reminder persistence controls, with direct Android channel settings
 - Uses battery-friendly passive widget refreshes rather than frequent exact wake-up alarms
 

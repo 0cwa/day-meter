@@ -33,6 +33,8 @@ class AppPreferences(context: Context) {
         const val KEY_MANUAL_START_DAY_ID = "manual_start_day_id"
         const val KEY_IS_MANUAL_LOCKED = "is_manual_locked"
         const val KEY_LAST_RESET_DATE = "last_reset_date"
+        const val MAX_SNOOZE_PRESETS = 6
+        const val KEY_SNOOZE_PRESETS = "snooze_presets"
         const val KEY_SNOOZE_MINUTES = "snooze_minutes"
         const val KEY_REMINDER_PERSISTENT = "reminder_persistent"
         const val KEY_SHOW_LOCK_SCREEN_DETAILS = "show_lock_screen_details"
@@ -215,6 +217,23 @@ class AppPreferences(context: Context) {
     var isManualLocked: Boolean
         get() = safeGetBoolean(KEY_IS_MANUAL_LOCKED, false)
         set(value) = prefs.edit { putBoolean(KEY_IS_MANUAL_LOCKED, value) }
+
+    /** Picker shortcuts; empty or corrupt storage restores the original useful defaults. */
+    var snoozePresets: List<Int>
+        get() {
+            val stored = safeGetString(KEY_SNOOZE_PRESETS) ?: return SNOOZE_MINUTE_CHOICES
+            val parsed = stored.split(',').map { it.trim().toIntOrNull() }
+            if (parsed.isEmpty() || parsed.size > MAX_SNOOZE_PRESETS || parsed.any { it == null || it !in 1..1440 }) {
+                prefs.edit { remove(KEY_SNOOZE_PRESETS) }
+                return SNOOZE_MINUTE_CHOICES
+            }
+            return parsed.filterNotNull().distinct().sorted()
+        }
+        set(value) {
+            val presets = value.takeIf { it.isNotEmpty() && it.size <= MAX_SNOOZE_PRESETS && it.all { minutes -> minutes in 1..1440 } }
+                ?.distinct()?.sorted() ?: SNOOZE_MINUTE_CHOICES
+            prefs.edit { putString(KEY_SNOOZE_PRESETS, presets.joinToString(",")) }
+        }
 
     var snoozeMinutes: Int
         get() {

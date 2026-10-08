@@ -45,7 +45,7 @@ class ActiveReminderRefreshTest {
         AppPreferences(context).apply {
             showLockScreenDetails = false
             reminderPersistent = true
-            snoozeMinutes = 30
+            snoozePresets = listOf(7, 25, 90)
         }
         ReminderNotifier.refreshActiveReminders(context)
         val notification = notification()
@@ -53,7 +53,8 @@ class ActiveReminderRefreshTest {
         assertTrue(notification.flags and Notification.FLAG_ONGOING_EVENT != 0)
         assertEquals(0, notification.flags and Notification.FLAG_AUTO_CANCEL)
         assertTrue(notification.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0)
-        assertEquals("Snooze 30 min", notification.actions[1].title.toString())
+        assertEquals("Snooze…", notification.actions[1].title.toString())
+        assertTrue(shadowOf(notification.actions[1].actionIntent).isActivity)
         val refreshed = store.getState(checkpoint.id, state.occurrenceDayId)!!
         assertEquals(CheckpointStatus.NOTIFIED, refreshed.status)
         assertTrue(refreshed.notifiedAtMillis > state.notifiedAtMillis)
@@ -91,10 +92,21 @@ class ActiveReminderRefreshTest {
 
     @Test
     fun staleCalendarOccurrenceIsCanceledInsteadOfRepublished() {
-        val (checkpoint, state) = deliver("2000-01-01")
+        val (checkpoint, state) = deliver("2000-01-01", 946684800000L)
         ReminderNotifier.refreshActiveReminders(context)
         assertTrue(shadowOf(manager).allNotifications.isEmpty())
         assertEquals(CheckpointStatus.MISSED, store.getState(checkpoint.id, state.occurrenceDayId)!!.status)
+    }
+
+    @Test
+    fun carriedOverNormalSnoozeDeliveredTodayKeepsItsReminderWhenPreferencesChange() {
+        val yesterday = Calendar.getInstance().apply { add(Calendar.DATE, -1) }.timeInMillis
+        val (checkpoint, state) = deliver(DayIdFormatter.format(yesterday))
+        AppPreferences(context).showLockScreenDetails = true
+        ReminderNotifier.refreshActiveReminders(context)
+        assertEquals(Notification.VISIBILITY_PUBLIC, notification().visibility)
+        assertEquals(CheckpointStatus.NOTIFIED, store.getState(checkpoint.id, state.occurrenceDayId)!!.status)
+        assertTrue(store.getState(checkpoint.id, state.occurrenceDayId)!!.notifiedAtMillis > state.notifiedAtMillis)
     }
 
     @Test
@@ -123,12 +135,12 @@ class ActiveReminderRefreshTest {
         assertTrue(CheckpointEngine(context).getDueCheckpoints().due.any { it.checkpoint.id == checkpoint.id })
     }
 
-    private fun deliver(day: String = DayIdFormatter.format(System.currentTimeMillis())): Pair<Checkpoint, CheckpointState> {
+    private fun deliver(day: String = DayIdFormatter.format(System.currentTimeMillis()),
+        token: Long = System.currentTimeMillis() - 1000L): Pair<Checkpoint, CheckpointState> {
         val calendar = Calendar.getInstance()
         val minutes = calendar.get(Calendar.HOUR_OF_DAY) * 60 + calendar.get(Calendar.MINUTE)
         val checkpoint = Checkpoint(label = "Active details", triggerValue = minutes)
         assertTrue(store.saveCheckpoint(checkpoint))
-        val token = System.currentTimeMillis() - 1000L
         val state = CheckpointState(checkpoint.id, day, CheckpointStatus.NOTIFIED, notifiedAtMillis = token)
         store.putState(state)
         assertTrue(ReminderNotifier.show(context, CheckpointOccurrence(checkpoint, day, token), token))

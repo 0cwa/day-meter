@@ -36,6 +36,13 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".ui.SnoozeActivity"
+            android:noHistory="true"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.DayProgressWidget.Snooze" />
+
         <receiver
             android:name=".widget.DayProgressWidgetProvider"
             android:label="@string/app_name"

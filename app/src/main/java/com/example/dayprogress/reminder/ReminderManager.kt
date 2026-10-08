@@ -30,6 +30,7 @@ import com.example.dayprogress.data.CheckpointStore
 import com.example.dayprogress.data.DayIdFormatter
 import com.example.dayprogress.data.DayRepository
 import com.example.dayprogress.ui.SettingsActivity
+import com.example.dayprogress.ui.SnoozeActivity
 import com.example.dayprogress.widget.DayProgressWidgetProvider
 import com.example.dayprogress.worker.runAsync
 import java.util.Date
@@ -103,6 +104,53 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
     }
 }
 
+/** Shared guarded snooze transition for the picker and previously delivered broadcast actions. */
+object CheckpointSnooze {
+    fun currentCheckpoint(context: Context, checkpointId: String, occurrenceDayId: String, deliveryToken: Long): Checkpoint? =
+        ReminderTransitions.run { currentCheckpointLocked(context, checkpointId, occurrenceDayId, deliveryToken) }
+
+    private fun currentCheckpointLocked(context: Context, checkpointId: String, occurrenceDayId: String, deliveryToken: Long): Checkpoint? {
+        val now = System.currentTimeMillis()
+        if (deliveryToken < 0L || !DayIdFormatter.isValid(occurrenceDayId)) return null
+        val store = CheckpointStore(context)
+        val checkpoint = store.getCheckpoints().find { it.id == checkpointId && it.enabled } ?: return null
+        val state = store.getState(checkpointId, occurrenceDayId) ?: return null
+        if (state.status != CheckpointStatus.NOTIFIED || state.notifiedAtMillis != deliveryToken) return null
+        // Independent snoozes may legitimately re-notify after midnight under their
+        // original occurrence date. A current delivery claim remains their authority.
+        if (checkpoint.predecessorId != null) {
+            if (occurrenceDayId != DayIdFormatter.format(now)) return null
+            val engine = CheckpointEngine(context)
+            val occurrence = engine.getCurrentOccurrence(checkpoint, now) ?: return null
+            if (occurrence.occurrenceDayId != occurrenceDayId || occurrence.dueAtMillis > now ||
+                engine.isBlocked(checkpoint, occurrenceDayId, now)) return null
+        }
+        return checkpoint
+    }
+
+    fun snooze(context: Context, checkpointId: String, occurrenceDayId: String, deliveryToken: Long, minutes: Int): Boolean {
+        if (minutes !in 1..1440) return false
+        val changed = ReminderTransitions.run {
+            currentCheckpointLocked(context, checkpointId, occurrenceDayId, deliveryToken) ?: return@run false
+            val store = CheckpointStore(context)
+            val state = store.getState(checkpointId, occurrenceDayId) ?: return@run false
+            val duration = minutes * 60_000L
+            store.putState(state.copy(
+                status = CheckpointStatus.SNOOZED,
+                snoozeAtMillis = System.currentTimeMillis() + duration,
+                snoozeAtElapsedRealtime = SystemClock.elapsedRealtime() + duration
+            ))
+            ReminderNotifier.cancel(context, checkpointId, occurrenceDayId)
+            true
+        }
+        if (changed) {
+            ReminderScheduler.reschedule(context)
+            DayProgressWidgetProvider.refreshWidgetsInBackground(context)
+        }
+        return changed
+    }
+}
+
 class CheckpointActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val checkpointId = intent.getStringExtra(EXTRA_CHECKPOINT_ID) ?: return
@@ -113,7 +161,7 @@ class CheckpointActionReceiver : BroadcastReceiver() {
             val changed = ReminderTransitions.run {
                 processAction(appContext, intent, checkpointId, occurrenceDayId, deliveryToken)
             }
-            if (changed) {
+            if (changed && intent.action != ACTION_SNOOZE) {
                 ReminderScheduler.reschedule(appContext)
                 DayProgressWidgetProvider.refreshWidgetsInBackground(appContext)
             }
@@ -127,6 +175,11 @@ class CheckpointActionReceiver : BroadcastReceiver() {
         occurrenceDayId: String,
         deliveryToken: Long
     ): Boolean {
+        if (intent.action == ACTION_SNOOZE) {
+            val minutes = intent.getIntExtra(EXTRA_SNOOZE_MINUTES, -1)
+                .takeIf { it in 1..1440 } ?: AppPreferences(context).snoozeMinutes
+            return CheckpointSnooze.snooze(context, checkpointId, occurrenceDayId, deliveryToken, minutes)
+        }
         val store = CheckpointStore(context)
         val checkpoint = store.getCheckpoints().find { it.id == checkpointId } ?: return false
         if (!checkpoint.enabled) return false
@@ -137,11 +190,6 @@ class CheckpointActionReceiver : BroadcastReceiver() {
             return false
         }
 
-        // Honor the duration printed on a delivered action even if settings changed later.
-        val snoozeMinutes = intent.getIntExtra(EXTRA_SNOOZE_MINUTES, -1)
-            .takeIf { it in AppPreferences.SNOOZE_MINUTE_CHOICES }
-            ?: AppPreferences(context).snoozeMinutes
-        val snoozeMillis = snoozeMinutes * 60_000L
         val newState = when (intent.action) {
             ACTION_DONE -> currentState.copy(
                 status = CheckpointStatus.DONE,
@@ -153,11 +201,6 @@ class CheckpointActionReceiver : BroadcastReceiver() {
                 status = CheckpointStatus.SKIPPED,
                 snoozeAtMillis = -1L,
                 snoozeAtElapsedRealtime = -1L
-            )
-            ACTION_SNOOZE -> currentState.copy(
-                status = CheckpointStatus.SNOOZED,
-                snoozeAtMillis = System.currentTimeMillis() + snoozeMillis,
-                snoozeAtElapsedRealtime = SystemClock.elapsedRealtime() + snoozeMillis
             )
             else -> return false
         }
@@ -312,8 +355,13 @@ object ReminderNotifier {
         val allowed = notificationsAllowed(context)
         store.getStates().values.filter { it.status == CheckpointStatus.NOTIFIED }.forEach { state ->
             val checkpoint = enabled[state.checkpointId]
-            val occurrence = checkpoint?.let { engine.getCurrentOccurrence(it, now) }
-                ?.takeIf { it.occurrenceDayId == state.occurrenceDayId && it.dueAtMillis <= now }
+            val occurrence = checkpoint?.let {
+                if (it.predecessorId == null && state.occurrenceDayId != DayIdFormatter.format(now) &&
+                    DayIdFormatter.format(state.notifiedAtMillis) == DayIdFormatter.format(now)) {
+                    // A normal snooze can re-notify yesterday's occurrence today.
+                    CheckpointOccurrence(it, state.occurrenceDayId, state.notifiedAtMillis)
+                } else engine.getCurrentOccurrence(it, now)
+            }?.takeIf { it.occurrenceDayId == state.occurrenceDayId && it.dueAtMillis <= now }
                 ?.takeUnless { engine.isBlocked(it.checkpoint, it.occurrenceDayId, now) }
             if (!allowed || occurrence == null) {
                 cancel(context, state.checkpointId, state.occurrenceDayId)
@@ -361,7 +409,7 @@ object ReminderNotifier {
             .setAutoCancel(!preferences.reminderPersistent)
             .setContentIntent(openAppIntent(context, occurrence))
             .addAction(0, context.getString(R.string.checkpoint_action_done), actionIntent(context, occurrence, CheckpointActionReceiver.ACTION_DONE, deliveryToken))
-            .addAction(0, context.getString(R.string.notif_action_snooze_minutes, preferences.snoozeMinutes), actionIntent(context, occurrence, CheckpointActionReceiver.ACTION_SNOOZE, deliveryToken, preferences.snoozeMinutes))
+            .addAction(0, context.getString(R.string.snooze_picker_action), snoozePickerIntent(context, occurrence, deliveryToken))
             .addAction(0, context.getString(R.string.checkpoint_action_skip), actionIntent(context, occurrence, CheckpointActionReceiver.ACTION_SKIP, deliveryToken))
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             when (checkpoint.notificationMode) {
@@ -408,12 +456,25 @@ object ReminderNotifier {
         )
     }
 
+    private fun snoozePickerIntent(context: Context, occurrence: CheckpointOccurrence, deliveryToken: Long): PendingIntent {
+        val intent = Intent(context, SnoozeActivity::class.java).apply {
+            action = SnoozeActivity.ACTION_PICK_SNOOZE
+            data = "daymeter://checkpoint/${occurrence.checkpoint.id}/${occurrence.occurrenceDayId}/snooze/$deliveryToken".toUri()
+            putExtra(CheckpointActionReceiver.EXTRA_CHECKPOINT_ID, occurrence.checkpoint.id)
+            putExtra(CheckpointActionReceiver.EXTRA_OCCURRENCE_DAY_ID, occurrence.occurrenceDayId)
+            putExtra(CheckpointActionReceiver.EXTRA_DELIVERY_TOKEN, deliveryToken)
+        }
+        // Activity launch directly avoids Android's notification-trampoline restrictions.
+        // Reusable identity lets Cancel reopen the picker without consuming the action.
+        return PendingIntent.getActivity(context, (occurrence.key + deliveryToken + "snooze").hashCode() and Int.MAX_VALUE,
+            intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    }
+
     private fun actionIntent(
         context: Context,
         occurrence: CheckpointOccurrence,
         action: String,
-        deliveryToken: Long,
-        snoozeMinutes: Int? = null
+        deliveryToken: Long
     ): PendingIntent {
         val intent = Intent(context, CheckpointActionReceiver::class.java).apply {
             this.action = action
@@ -421,7 +482,6 @@ object ReminderNotifier {
             putExtra(CheckpointActionReceiver.EXTRA_CHECKPOINT_ID, occurrence.checkpoint.id)
             putExtra(CheckpointActionReceiver.EXTRA_OCCURRENCE_DAY_ID, occurrence.occurrenceDayId)
             putExtra(CheckpointActionReceiver.EXTRA_DELIVERY_TOKEN, deliveryToken)
-            snoozeMinutes?.let { putExtra(CheckpointActionReceiver.EXTRA_SNOOZE_MINUTES, it) }
         }
         return PendingIntent.getBroadcast(
             context,

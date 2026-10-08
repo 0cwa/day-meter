@@ -82,13 +82,10 @@
         <Preference
             app:key="notification_status"
             app:title="@string/notification_status_title" />
-        <ListPreference
-            app:key="snooze_minutes"
-            app:defaultValue="10"
-            app:entries="@array/notif_snooze_entries"
-            app:entryValues="@array/notif_snooze_values"
-            app:title="@string/notif_snooze_title"
-            app:useSimpleSummaryProvider="true" />
+        <Preference
+            app:key="snooze_presets"
+            app:persistent="false"
+            app:title="@string/notif_snooze_title" />
         <SwitchPreferenceCompat
             app:key="reminder_persistent"
             app:defaultValue="false"

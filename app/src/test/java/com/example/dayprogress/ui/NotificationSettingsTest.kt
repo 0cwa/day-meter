@@ -8,9 +8,9 @@ import android.os.Build
 import android.os.Looper
 import android.provider.Settings
 import android.widget.Button
+import android.widget.EditText
 import android.widget.Spinner
 import androidx.appcompat.app.AlertDialog
-import androidx.preference.ListPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceCategory
 import androidx.preference.SwitchPreferenceCompat
@@ -48,15 +48,16 @@ class NotificationSettingsTest {
     @Test
     fun notificationPreferencesAreGroupedAndShowBackwardCompatibleDefaults() = withSettings { _, fragment ->
         val category = fragment.findPreference<PreferenceCategory>("notification_category")!!
-        for (key in listOf("notification_status", AppPreferences.KEY_SNOOZE_MINUTES,
+        for (key in listOf("notification_status", AppPreferences.KEY_SNOOZE_PRESETS,
             AppPreferences.KEY_REMINDER_PERSISTENT, AppPreferences.KEY_SHOW_LOCK_SCREEN_DETAILS,
             "notification_channel_settings")) {
             assertSame(category, fragment.findPreference<Preference>(key)!!.parent)
         }
-        val snooze = fragment.findPreference<ListPreference>(AppPreferences.KEY_SNOOZE_MINUTES)!!
-        assertEquals("10", snooze.value)
-        assertEquals("10 minutes", snooze.summary.toString())
-        assertEquals(listOf("5", "10", "15", "30", "60"), snooze.entryValues.map(CharSequence::toString))
+        val snooze = fragment.findPreference<Preference>(AppPreferences.KEY_SNOOZE_PRESETS)!!
+        assertFalse(snooze.isPersistent)
+        assertNull(fragment.findPreference<Preference>(AppPreferences.KEY_SNOOZE_MINUTES))
+        assertEquals("5, 10, 15, 30, 60 min · Custom is always available", snooze.summary.toString())
+        assertEquals(listOf(5, 10, 15, 30, 60), AppPreferences(context).snoozePresets)
         assertFalse(fragment.findPreference<SwitchPreferenceCompat>(AppPreferences.KEY_REMINDER_PERSISTENT)!!.isChecked)
         assertFalse(fragment.findPreference<SwitchPreferenceCompat>(AppPreferences.KEY_SHOW_LOCK_SCREEN_DETAILS)!!.isChecked)
     }
@@ -90,21 +91,24 @@ class NotificationSettingsTest {
     @Test
     fun changingNotificationPreferencesSurvivesReopeningSettings() {
         withSettings { _, fragment ->
-            val snooze = fragment.findPreference<ListPreference>(AppPreferences.KEY_SNOOZE_MINUTES)!!
-            assertTrue(snooze.callChangeListener("30"))
-            snooze.value = "30"
+            click(fragment, AppPreferences.KEY_SNOOZE_PRESETS)
+            val dialog = latestDialog()
+            dialog.findViewById<EditText>(R.id.snooze_presets_input)!!.setText("7, 25, 90")
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertFalse(dialog.isShowing)
             for (key in listOf(AppPreferences.KEY_REMINDER_PERSISTENT, AppPreferences.KEY_SHOW_LOCK_SCREEN_DETAILS)) {
                 val toggle = fragment.findPreference<SwitchPreferenceCompat>(key)!!
                 assertTrue(toggle.callChangeListener(true))
                 toggle.isChecked = true
             }
             val preferences = AppPreferences(context)
-            assertEquals(30, preferences.snoozeMinutes)
+            assertEquals(listOf(7, 25, 90), preferences.snoozePresets)
             assertTrue(preferences.reminderPersistent)
             assertTrue(preferences.showLockScreenDetails)
         }
         withSettings { _, fragment ->
-            assertEquals("30 minutes", fragment.findPreference<ListPreference>(AppPreferences.KEY_SNOOZE_MINUTES)!!.summary.toString())
+            assertEquals("7, 25, 90 min · Custom is always available", fragment.findPreference<Preference>(AppPreferences.KEY_SNOOZE_PRESETS)!!.summary.toString())
             assertTrue(fragment.findPreference<SwitchPreferenceCompat>(AppPreferences.KEY_REMINDER_PERSISTENT)!!.isChecked)
             assertTrue(fragment.findPreference<SwitchPreferenceCompat>(AppPreferences.KEY_SHOW_LOCK_SCREEN_DETAILS)!!.isChecked)
         }
@@ -169,6 +173,7 @@ class NotificationSettingsTest {
     fun resetRestoresNewReminderControlsAndTheirDisplayedValues() {
         AppPreferences(context).apply {
             snoozeMinutes = 60
+            snoozePresets = listOf(7, 25, 90)
             reminderPersistent = true
             showLockScreenDetails = true
         }
@@ -180,10 +185,69 @@ class NotificationSettingsTest {
             assertEquals(10, preferences.snoozeMinutes)
             assertFalse(preferences.reminderPersistent)
             assertFalse(preferences.showLockScreenDetails)
-            assertEquals("10 minutes", fragment.findPreference<ListPreference>(AppPreferences.KEY_SNOOZE_MINUTES)!!.summary.toString())
+            assertEquals(listOf(5, 10, 15, 30, 60), preferences.snoozePresets)
+            assertEquals("5, 10, 15, 30, 60 min · Custom is always available",
+                fragment.findPreference<Preference>(AppPreferences.KEY_SNOOZE_PRESETS)!!.summary.toString())
             assertFalse(fragment.findPreference<SwitchPreferenceCompat>(AppPreferences.KEY_REMINDER_PERSISTENT)!!.isChecked)
             assertFalse(fragment.findPreference<SwitchPreferenceCompat>(AppPreferences.KEY_SHOW_LOCK_SCREEN_DETAILS)!!.isChecked)
         }
+    }
+
+    @Test
+    fun snoozePresetEditorRejectsInvalidValuesWithoutChangingSavedChoices() = withSettings { _, fragment ->
+        val saved = AppPreferences(context).snoozePresets
+        click(fragment, AppPreferences.KEY_SNOOZE_PRESETS)
+        val dialog = latestDialog()
+        val input = dialog.findViewById<EditText>(R.id.snooze_presets_input)!!
+        for (invalid in listOf("", "0", "-1", "1441", "5, 5", "1,2,3,4,5,6,7", "ten", "5,,10")) {
+            input.setText(invalid)
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertTrue("Invalid choices must keep the editor open: $invalid", dialog.isShowing)
+            assertEquals(saved, AppPreferences(context).snoozePresets)
+            assertNotNull(input.error)
+        }
+        input.setText("1, 1440")
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertFalse(dialog.isShowing)
+        assertEquals(listOf(1, 1440), AppPreferences(context).snoozePresets)
+    }
+
+    @Test
+    fun resettingOnlySnoozeChoicesPreservesOtherReminderSettings() = withSettings { _, fragment ->
+        AppPreferences(context).apply {
+            snoozePresets = listOf(7, 25)
+            reminderPersistent = true
+            showLockScreenDetails = true
+        }
+        click(fragment, AppPreferences.KEY_SNOOZE_PRESETS)
+        val dialog = latestDialog()
+        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(dialog.isShowing)
+        assertEquals(listOf(7, 25), AppPreferences(context).snoozePresets)
+        assertEquals("5, 10, 15, 30, 60", dialog.findViewById<EditText>(R.id.snooze_presets_input)!!.text.toString())
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+        val preferences = AppPreferences(context)
+        assertEquals(listOf(5, 10, 15, 30, 60), preferences.snoozePresets)
+        assertTrue(preferences.reminderPersistent)
+        assertTrue(preferences.showLockScreenDetails)
+        assertEquals("5, 10, 15, 30, 60 min · Custom is always available",
+            fragment.findPreference<Preference>(AppPreferences.KEY_SNOOZE_PRESETS)!!.summary.toString())
+    }
+
+    @Test
+    fun cancelingSnoozeChoicesKeepsSavedPresetsAndSummary() = withSettings { _, fragment ->
+        val before = fragment.findPreference<Preference>(AppPreferences.KEY_SNOOZE_PRESETS)!!.summary.toString()
+        click(fragment, AppPreferences.KEY_SNOOZE_PRESETS)
+        val dialog = latestDialog()
+        dialog.findViewById<EditText>(R.id.snooze_presets_input)!!.setText("7, 25")
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(listOf(5, 10, 15, 30, 60), AppPreferences(context).snoozePresets)
+        assertEquals(before, fragment.findPreference<Preference>(AppPreferences.KEY_SNOOZE_PRESETS)!!.summary.toString())
     }
 
     private fun click(fragment: SettingsFragment, key: String) {

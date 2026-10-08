@@ -43,22 +43,25 @@ class NotificationControlsTest {
     }
 
     @Test
-    fun defaultsPreservePrivacyDismissalAndTenMinuteSnooze() {
+    fun defaultsPreservePrivacyDismissalAndOfferSnoozeChooser() {
         val preferences = AppPreferences(context)
-        assertEquals(10, preferences.snoozeMinutes)
+        assertEquals(10, preferences.snoozeMinutes) // Legacy notification actions keep their fallback.
+        assertEquals(listOf(5, 10, 15, 30, 60), preferences.snoozePresets)
         assertFalse(preferences.reminderPersistent)
         assertFalse(preferences.showLockScreenDetails)
         val notification = deliver(CheckpointNotificationMode.GENTLE)
         assertEquals(Notification.VISIBILITY_SECRET, notification.visibility)
         assertEquals(0, notification.flags and Notification.FLAG_ONGOING_EVENT)
         assertTrue(notification.flags and Notification.FLAG_AUTO_CANCEL != 0)
-        assertEquals("Snooze 10 min", notification.actions[1].title.toString())
+        assertEquals("Snooze…", notification.actions[1].title.toString())
+        assertTrue(shadowOf(notification.actions[1].actionIntent).isActivity)
     }
 
     @Test
-    fun privacyPersistenceAndSnoozeActionReflectPreferences() {
+    fun privacyPersistenceAndSnoozeChooserReflectPreferences() {
         AppPreferences(context).apply {
-            snoozeMinutes = 30
+            snoozeMinutes = 30 // Compatibility fallback does not select a chooser duration.
+            snoozePresets = listOf(7, 25, 90)
             reminderPersistent = true
             showLockScreenDetails = true
         }
@@ -66,7 +69,8 @@ class NotificationControlsTest {
         assertEquals(Notification.VISIBILITY_PUBLIC, notification.visibility)
         assertTrue(notification.flags and Notification.FLAG_ONGOING_EVENT != 0)
         assertEquals(0, notification.flags and Notification.FLAG_AUTO_CANCEL)
-        assertEquals("Snooze 30 min", notification.actions[1].title.toString())
+        assertEquals("Snooze…", notification.actions[1].title.toString())
+        assertTrue(shadowOf(notification.actions[1].actionIntent).isActivity)
     }
 
     @Test

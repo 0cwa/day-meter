@@ -281,10 +281,12 @@ class SettingsFragment : PreferenceFragmentCompat() {
             true
         }
 
-        findPreference<ListPreference>(AppPreferences.KEY_SNOOZE_MINUTES)?.setOnPreferenceChangeListener { _, newValue ->
-            prefs.snoozeMinutes = (newValue as String).toInt()
-            refreshReminderControls()
-            true
+        findPreference<Preference>(AppPreferences.KEY_SNOOZE_PRESETS)?.apply {
+            updateSnoozePresetsSummary(this)
+            setOnPreferenceClickListener {
+                showSnoozePresetsEditor()
+                true
+            }
         }
         findPreference<SwitchPreferenceCompat>(AppPreferences.KEY_REMINDER_PERSISTENT)?.setOnPreferenceChangeListener { _, newValue ->
             prefs.reminderPersistent = newValue as Boolean
@@ -737,6 +739,47 @@ class SettingsFragment : PreferenceFragmentCompat() {
         }
     }
 
+    private fun updateSnoozePresetsSummary(preference: Preference) {
+        preference.summary = getString(R.string.notif_snooze_presets_summary, prefs.snoozePresets.joinToString(", "))
+    }
+
+    private fun showSnoozePresetsEditor() {
+        val input = EditText(requireContext()).apply {
+            id = R.id.snooze_presets_input
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+            isSingleLine = false
+            setText(prefs.snoozePresets.joinToString(", "))
+            hint = getString(R.string.notif_snooze_presets_hint)
+            val inset = (24 * resources.displayMetrics.density).toInt()
+            setPadding(inset, paddingTop, inset, paddingBottom)
+        }
+        val dialog = MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.notif_snooze_title)
+            .setMessage(R.string.notif_snooze_presets_help)
+            .setView(input)
+            .setPositiveButton(R.string.checkpoint_save, null)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setNeutralButton(R.string.notif_snooze_presets_reset, null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                input.setText("5, 10, 15, 30, 60")
+                input.error = null
+            }
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val parts = input.text.toString().split(',').map { it.trim().toIntOrNull() }
+                if (parts.size !in 1..6 || parts.any { it == null || it !in 1..1440 } || parts.distinct().size != parts.size) {
+                    input.error = getString(R.string.notif_snooze_presets_error)
+                    return@setOnClickListener
+                }
+                prefs.snoozePresets = parts.filterNotNull()
+                findPreference<Preference>(AppPreferences.KEY_SNOOZE_PRESETS)?.let { updateSnoozePresetsSummary(it) }
+                dialog.dismiss()
+            }
+        }
+        dialog.show()
+    }
+
     private fun refreshReminderControls() {
         ReminderNotifier.refreshActiveReminders(requireContext())
         ReminderScheduler.reschedule(requireContext())
@@ -931,6 +974,7 @@ class SettingsFragment : PreferenceFragmentCompat() {
             isManualLocked = false
             lastResetDate = null
             snoozeMinutes = 10
+            snoozePresets = listOf(5, 10, 15, 30, 60)
             reminderPersistent = false
             showLockScreenDetails = false
         }

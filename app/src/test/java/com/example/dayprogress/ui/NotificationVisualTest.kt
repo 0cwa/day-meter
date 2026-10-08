@@ -9,6 +9,7 @@ import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ListView
+import android.widget.EditText
 import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
@@ -44,7 +45,7 @@ class NotificationVisualTest {
             val context = ApplicationProvider.getApplicationContext<Context>()
             context.getSharedPreferences(AppPreferences.FILE_NAME, Context.MODE_PRIVATE).edit().clear().commit()
             val prefs = AppPreferences(context)
-            assertEquals(10, prefs.snoozeMinutes)
+            assertEquals(listOf(5, 10, 15, 30, 60), prefs.snoozePresets)
             assertFalse(prefs.reminderPersistent)
             assertFalse(prefs.showLockScreenDetails)
             val controller = Robolectric.buildActivity(SettingsActivity::class.java).setup().visible()
@@ -55,6 +56,20 @@ class NotificationVisualTest {
             layout(root, 390, 844)
             scrollTo(fragment, "notification_category", root)
             capture(root, "notifications-defaults-${scale.toInt()}x")
+            scrollTo(fragment, AppPreferences.KEY_SNOOZE_PRESETS, root)
+            assertReadableText(row(fragment, AppPreferences.KEY_SNOOZE_PRESETS))
+            assertTrue(row(fragment, AppPreferences.KEY_SNOOZE_PRESETS).performClick())
+            shadowOf(Looper.getMainLooper()).idle()
+            val presetDialog = ShadowDialog.getLatestDialog()
+            val presetDecor = presetDialog.window!!.decorView
+            layoutDialog(presetDecor)
+            assertReadableText(presetDecor)
+            capture(presetDecor, "snooze-preset-settings-${scale.toInt()}x")
+            presetDialog.findViewById<EditText>(R.id.snooze_presets_input).setText("7, 25, 90")
+            assertTrue(presetDialog.findViewById<View>(android.R.id.button1).performClick())
+            assertEquals(listOf(7, 25, 90), prefs.snoozePresets)
+            scrollTo(fragment, AppPreferences.KEY_SNOOZE_PRESETS, root)
+            assertReadableText(row(fragment, AppPreferences.KEY_SNOOZE_PRESETS))
             scrollTo(fragment, AppPreferences.KEY_REMINDER_PERSISTENT, root)
             assertReadableText(row(fragment, AppPreferences.KEY_REMINDER_PERSISTENT))
             assertTrue(row(fragment, AppPreferences.KEY_REMINDER_PERSISTENT).performClick())
