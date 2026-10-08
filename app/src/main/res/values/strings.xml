@@ -126,8 +126,6 @@
     <string name="checkpoint_no_days">Select at least one day</string>
     <string name="checkpoint_summary_clock">At %1$s · %2$s · %3$s</string>
     <string name="checkpoint_summary_percent">At %1$d%% · %2$s · %3$s</string>
-    <string name="checkpoint_gentle">Gentle</string>
-    <string name="checkpoint_silent">Silent</string>
     <string name="checkpoint_disabled_suffix"> · Disabled</string>
 
     <!-- Notifications -->

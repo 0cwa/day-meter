@@ -82,6 +82,27 @@
         <Preference
             app:key="notification_status"
             app:title="@string/notification_status_title" />
+        <ListPreference
+            app:key="snooze_minutes"
+            app:defaultValue="10"
+            app:entries="@array/notif_snooze_entries"
+            app:entryValues="@array/notif_snooze_values"
+            app:title="@string/notif_snooze_title"
+            app:useSimpleSummaryProvider="true" />
+        <SwitchPreferenceCompat
+            app:key="reminder_persistent"
+            app:defaultValue="false"
+            app:title="@string/notif_persistent_title"
+            app:summary="@string/notif_persistent_summary" />
+        <SwitchPreferenceCompat
+            app:key="show_lock_screen_details"
+            app:defaultValue="false"
+            app:title="@string/notif_lock_screen_title"
+            app:summary="@string/notif_lock_screen_summary" />
+        <Preference
+            app:key="notification_channel_settings"
+            app:title="@string/notif_system_controls_title"
+            app:summary="@string/notif_system_controls_summary" />
     </PreferenceCategory>
 
     <PreferenceCategory

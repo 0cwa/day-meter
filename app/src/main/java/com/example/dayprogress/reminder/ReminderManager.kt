@@ -12,12 +12,14 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
 import android.os.SystemClock
+import android.provider.Settings
 import android.text.format.DateFormat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import com.example.dayprogress.R
+import com.example.dayprogress.data.AppPreferences
 import com.example.dayprogress.data.Checkpoint
 import com.example.dayprogress.data.CheckpointEngine
 import com.example.dayprogress.data.CheckpointNotificationMode
@@ -25,6 +27,7 @@ import com.example.dayprogress.data.CheckpointOccurrence
 import com.example.dayprogress.data.CheckpointState
 import com.example.dayprogress.data.CheckpointStatus
 import com.example.dayprogress.data.CheckpointStore
+import com.example.dayprogress.data.DayIdFormatter
 import com.example.dayprogress.data.DayRepository
 import com.example.dayprogress.ui.SettingsActivity
 import com.example.dayprogress.widget.DayProgressWidgetProvider
@@ -134,6 +137,11 @@ class CheckpointActionReceiver : BroadcastReceiver() {
             return false
         }
 
+        // Honor the duration printed on a delivered action even if settings changed later.
+        val snoozeMinutes = intent.getIntExtra(EXTRA_SNOOZE_MINUTES, -1)
+            .takeIf { it in AppPreferences.SNOOZE_MINUTE_CHOICES }
+            ?: AppPreferences(context).snoozeMinutes
+        val snoozeMillis = snoozeMinutes * 60_000L
         val newState = when (intent.action) {
             ACTION_DONE -> currentState.copy(
                 status = CheckpointStatus.DONE,
@@ -148,8 +156,8 @@ class CheckpointActionReceiver : BroadcastReceiver() {
             )
             ACTION_SNOOZE -> currentState.copy(
                 status = CheckpointStatus.SNOOZED,
-                snoozeAtMillis = System.currentTimeMillis() + SNOOZE_MILLIS,
-                snoozeAtElapsedRealtime = SystemClock.elapsedRealtime() + SNOOZE_MILLIS
+                snoozeAtMillis = System.currentTimeMillis() + snoozeMillis,
+                snoozeAtElapsedRealtime = SystemClock.elapsedRealtime() + snoozeMillis
             )
             else -> return false
         }
@@ -166,7 +174,7 @@ class CheckpointActionReceiver : BroadcastReceiver() {
         const val EXTRA_CHECKPOINT_ID = "checkpoint_id"
         const val EXTRA_OCCURRENCE_DAY_ID = "occurrence_day_id"
         const val EXTRA_DELIVERY_TOKEN = "delivery_token"
-        private const val SNOOZE_MILLIS = 10 * 60 * 1000L
+        const val EXTRA_SNOOZE_MINUTES = "snooze_minutes"
     }
 }
 
@@ -224,6 +232,9 @@ object ReminderNotifier {
     private const val GENTLE_CHANNEL = "day_checkpoints_gentle_v1"
     private const val SILENT_CHANNEL = "day_checkpoints_silent_v1"
 
+    private const val VIBRATE_CHANNEL = "day_checkpoints_vibrate_v1"
+    private const val PROMINENT_CHANNEL = "day_checkpoints_prominent_v1"
+
     fun createChannels(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -244,7 +255,28 @@ object ReminderNotifier {
             enableVibration(false)
             setSound(null, null)
         }
-        manager.createNotificationChannels(listOf(gentle, silent))
+        val vibrate = NotificationChannel(
+            VIBRATE_CHANNEL,
+            context.getString(R.string.notif_channel_vibrate),
+            NotificationManager.IMPORTANCE_DEFAULT
+        ).apply {
+            description = context.getString(R.string.notif_channel_vibrate_description)
+            enableVibration(true)
+            setSound(null, null)
+        }
+        val prominent = NotificationChannel(
+            PROMINENT_CHANNEL,
+            context.getString(R.string.notif_channel_prominent),
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = context.getString(R.string.notif_channel_prominent_description)
+            enableVibration(true)
+        }
+        // Android channel settings belong to the user. Only create missing channels;
+        // rescheduling must never reapply defaults over system customization.
+        manager.createNotificationChannels(listOf(gentle, silent, vibrate, prominent).filter {
+            manager.getNotificationChannel(it.id) == null
+        })
     }
 
     fun notificationsAllowed(context: Context): Boolean {
@@ -271,6 +303,41 @@ object ReminderNotifier {
         return manager.getNotificationChannel(channelId(mode))?.importance != NotificationManager.IMPORTANCE_NONE
     }
 
+    /** Apply reminder preferences immediately without sounding already delivered reminders again. */
+    fun refreshActiveReminders(context: Context) = ReminderTransitions.run {
+        val store = CheckpointStore(context)
+        val engine = CheckpointEngine(context)
+        val now = System.currentTimeMillis()
+        val enabled = store.getCheckpoints().filter(Checkpoint::enabled).associateBy(Checkpoint::id)
+        val allowed = notificationsAllowed(context)
+        store.getStates().values.filter { it.status == CheckpointStatus.NOTIFIED }.forEach { state ->
+            val checkpoint = enabled[state.checkpointId]
+            val occurrence = checkpoint?.let { engine.getCurrentOccurrence(it, now) }
+                ?.takeIf { it.occurrenceDayId == state.occurrenceDayId && it.dueAtMillis <= now }
+                ?.takeUnless { engine.isBlocked(it.checkpoint, it.occurrenceDayId, now) }
+            if (!allowed || occurrence == null) {
+                cancel(context, state.checkpointId, state.occurrenceDayId)
+                if (state.occurrenceDayId != DayIdFormatter.format(now)) {
+                    store.putState(state.copy(status = CheckpointStatus.MISSED, notifiedAtMillis = -1L))
+                } else {
+                    // A prerequisite or system permission may become available later today.
+                    // Removing the delivery claim lets the scheduler evaluate it again.
+                    store.removeState(state.checkpointId, state.occurrenceDayId)
+                }
+                return@forEach
+            }
+            // Rotate action identity before replacing the notification. Captured old actions
+            // must not change a reminder whose displayed snooze duration has just changed.
+            val token = maxOf(now, state.notifiedAtMillis + 1L)
+            val refreshed = state.copy(notifiedAtMillis = token)
+            store.putState(refreshed)
+            if (!runCatching { show(context, occurrence, token) }.getOrDefault(false)) {
+                cancel(context, state.checkpointId, state.occurrenceDayId)
+                store.removeState(state.checkpointId, state.occurrenceDayId)
+            }
+        }
+    }
+
     fun show(context: Context, occurrence: CheckpointOccurrence, deliveryToken: Long): Boolean {
         if (!notificationsAllowed(context)) return false
         createChannels(context)
@@ -280,6 +347,7 @@ object ReminderNotifier {
         val content = context.getString(R.string.notification_checkpoint_content, dueTime)
         val channel = channelId(checkpoint.notificationMode)
 
+        val preferences = AppPreferences(context)
         val builder = NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_notification_day_meter)
             .setColor(Color.rgb(64, 224, 208))
@@ -287,18 +355,27 @@ object ReminderNotifier {
             .setContentText(content)
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
             .setGroup("day_checkpoints")
-            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .setVisibility(if (preferences.showLockScreenDetails) NotificationCompat.VISIBILITY_PUBLIC else NotificationCompat.VISIBILITY_SECRET)
             .setOnlyAlertOnce(true)
-            .setAutoCancel(true)
+            .setOngoing(preferences.reminderPersistent)
+            .setAutoCancel(!preferences.reminderPersistent)
             .setContentIntent(openAppIntent(context, occurrence))
             .addAction(0, context.getString(R.string.checkpoint_action_done), actionIntent(context, occurrence, CheckpointActionReceiver.ACTION_DONE, deliveryToken))
-            .addAction(0, context.getString(R.string.checkpoint_action_snooze), actionIntent(context, occurrence, CheckpointActionReceiver.ACTION_SNOOZE, deliveryToken))
+            .addAction(0, context.getString(R.string.notif_action_snooze_minutes, preferences.snoozeMinutes), actionIntent(context, occurrence, CheckpointActionReceiver.ACTION_SNOOZE, deliveryToken, preferences.snoozeMinutes))
             .addAction(0, context.getString(R.string.checkpoint_action_skip), actionIntent(context, occurrence, CheckpointActionReceiver.ACTION_SKIP, deliveryToken))
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            if (checkpoint.notificationMode == CheckpointNotificationMode.GENTLE) {
-                builder.setPriority(NotificationCompat.PRIORITY_DEFAULT).setDefaults(NotificationCompat.DEFAULT_SOUND)
-            } else {
-                builder.setPriority(NotificationCompat.PRIORITY_LOW).setSilent(true)
+            when (checkpoint.notificationMode) {
+                CheckpointNotificationMode.GENTLE -> builder
+                    .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                    .setDefaults(NotificationCompat.DEFAULT_SOUND)
+                CheckpointNotificationMode.SILENT -> builder
+                    .setPriority(NotificationCompat.PRIORITY_LOW).setSilent(true)
+                CheckpointNotificationMode.VIBRATE -> builder
+                    .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                    .setDefaults(NotificationCompat.DEFAULT_VIBRATE)
+                CheckpointNotificationMode.PROMINENT -> builder
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_VIBRATE)
             }
         }
 
@@ -335,7 +412,8 @@ object ReminderNotifier {
         context: Context,
         occurrence: CheckpointOccurrence,
         action: String,
-        deliveryToken: Long
+        deliveryToken: Long,
+        snoozeMinutes: Int? = null
     ): PendingIntent {
         val intent = Intent(context, CheckpointActionReceiver::class.java).apply {
             this.action = action
@@ -343,6 +421,7 @@ object ReminderNotifier {
             putExtra(CheckpointActionReceiver.EXTRA_CHECKPOINT_ID, occurrence.checkpoint.id)
             putExtra(CheckpointActionReceiver.EXTRA_OCCURRENCE_DAY_ID, occurrence.occurrenceDayId)
             putExtra(CheckpointActionReceiver.EXTRA_DELIVERY_TOKEN, deliveryToken)
+            snoozeMinutes?.let { putExtra(CheckpointActionReceiver.EXTRA_SNOOZE_MINUTES, it) }
         }
         return PendingIntent.getBroadcast(
             context,
@@ -352,8 +431,24 @@ object ReminderNotifier {
         )
     }
 
-    private fun channelId(mode: CheckpointNotificationMode): String =
-        if (mode == CheckpointNotificationMode.SILENT) SILENT_CHANNEL else GENTLE_CHANNEL
+    fun channelId(mode: CheckpointNotificationMode): String = when (mode) {
+        CheckpointNotificationMode.GENTLE -> GENTLE_CHANNEL
+        CheckpointNotificationMode.SILENT -> SILENT_CHANNEL
+        CheckpointNotificationMode.VIBRATE -> VIBRATE_CHANNEL
+        CheckpointNotificationMode.PROMINENT -> PROMINENT_CHANNEL
+    }
+
+    fun channelSettingsIntent(context: Context, mode: CheckpointNotificationMode): Intent {
+        createChannels(context)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                .putExtra(Settings.EXTRA_CHANNEL_ID, channelId(mode))
+        } else {
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                .setData("package:${context.packageName}".toUri())
+        }
+    }
 
     private fun notificationTag(occurrence: CheckpointOccurrence) = notificationTag(occurrence.checkpoint.id, occurrence.occurrenceDayId)
     private fun notificationTag(checkpointId: String, occurrenceDayId: String) = "checkpoint:$checkpointId:$occurrenceDayId"

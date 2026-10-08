@@ -33,6 +33,10 @@ class AppPreferences(context: Context) {
         const val KEY_MANUAL_START_DAY_ID = "manual_start_day_id"
         const val KEY_IS_MANUAL_LOCKED = "is_manual_locked"
         const val KEY_LAST_RESET_DATE = "last_reset_date"
+        const val KEY_SNOOZE_MINUTES = "snooze_minutes"
+        const val KEY_REMINDER_PERSISTENT = "reminder_persistent"
+        const val KEY_SHOW_LOCK_SCREEN_DETAILS = "show_lock_screen_details"
+        val SNOOZE_MINUTE_CHOICES = listOf(5, 10, 15, 30, 60)
         const val KEY_CHECKPOINTS = "checkpoints_v1"
         const val KEY_CHECKPOINT_STATES = "checkpoint_states_v1"
         const val KEY_CHECKPOINT_SNOOZE_ELAPSED = "checkpoint_snooze_elapsed_v1"
@@ -211,6 +215,24 @@ class AppPreferences(context: Context) {
     var isManualLocked: Boolean
         get() = safeGetBoolean(KEY_IS_MANUAL_LOCKED, false)
         set(value) = prefs.edit { putBoolean(KEY_IS_MANUAL_LOCKED, value) }
+
+    var snoozeMinutes: Int
+        get() {
+            val minutes = safeGetInt(KEY_SNOOZE_MINUTES, 10)
+            return if (minutes in SNOOZE_MINUTE_CHOICES) minutes else {
+                prefs.edit { remove(KEY_SNOOZE_MINUTES) }
+                10
+            }
+        }
+        set(value) = prefs.edit { putString(KEY_SNOOZE_MINUTES, value.toString()) }
+
+    var reminderPersistent: Boolean
+        get() = safeGetBoolean(KEY_REMINDER_PERSISTENT, false)
+        set(value) = prefs.edit { putBoolean(KEY_REMINDER_PERSISTENT, value) }
+
+    var showLockScreenDetails: Boolean
+        get() = safeGetBoolean(KEY_SHOW_LOCK_SCREEN_DETAILS, false)
+        set(value) = prefs.edit { putBoolean(KEY_SHOW_LOCK_SCREEN_DETAILS, value) }
 
     var lastResetDate: String?
         get() = safeGetString(KEY_LAST_RESET_DATE)?.takeIf(DayIdFormatter::isValid)

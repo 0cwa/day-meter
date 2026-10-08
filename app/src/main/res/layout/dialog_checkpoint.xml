@@ -163,7 +163,20 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:minHeight="48dp"
-            android:entries="@array/checkpoint_notification_modes" />
+            android:entries="@array/notif_mode_entries" />
+
+        <Button
+            android:id="@+id/checkpoint_channel_settings"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:textColor="?attr/colorPrimary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:text="@string/notif_system_controls_title" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/notif_system_controls_summary" />
 
         <CheckBox
             android:id="@+id/checkpoint_show_marker"
