@@ -5,6 +5,7 @@ import android.app.AppOpsManager
 import android.content.Context
 import android.widget.TimePicker
 import androidx.preference.Preference
+import androidx.preference.PreferenceCategory
 import androidx.preference.SwitchPreferenceCompat
 import androidx.test.core.app.ApplicationProvider
 import com.example.dayprogress.R
@@ -69,6 +70,13 @@ class SettingsStartModeTest {
             (0..5).map { screen.getPreference(it).key })
         assertEquals("notification_category", row("notification_status").parent!!.key)
         assertEquals("automatic_detection_category", row("usage_access_status").parent!!.key)
+        for (index in 0 until screen.preferenceCount) {
+            val category = screen.getPreference(index) as PreferenceCategory
+            for (child in 0 until category.preferenceCount) {
+                assertFalse("Settings titles must wrap at enlarged font sizes",
+                    category.getPreference(child).isSingleLineTitle)
+            }
+        }
         assertFalse(fragment.findPreference<SwitchPreferenceCompat>(AppPreferences.KEY_IS_MANUAL_LOCKED)!!.isEnabled)
     }
 

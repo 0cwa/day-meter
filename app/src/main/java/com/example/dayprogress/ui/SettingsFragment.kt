@@ -91,6 +91,7 @@ class SettingsFragment : PreferenceFragmentCompat() {
             for (row in 0 until category.preferenceCount) {
                 val preference = category.getPreference(row)
                 preference.isIconSpaceReserved = preference.icon != null
+                preference.isSingleLineTitle = false
             }
         }
         findPreference<ListPreference>(AppPreferences.KEY_INTERFACE_PALETTE)?.setOnPreferenceChangeListener { _, newValue ->
