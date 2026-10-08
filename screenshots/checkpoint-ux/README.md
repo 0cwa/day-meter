@@ -11,3 +11,5 @@ These PNGs render the app's actual Android activities, preference rows, and chec
 Images live on a separate evidence branch so feature PR diffs remain focused on source, tests, and documentation.
 
 - `notifications/`: default/customized shared reminder controls, Android channel-settings entry points, the actual four-style popup menu, and a saved Prominent selection. `NotificationVisualTest` in the notification PR reproduces these views at 1×/2× fonts and checks text readability and real toggle/save interactions. Popup captures include the actual native PopupWindow background.
+
+- `notifications/snooze-*.png`: notification-launched duration picker, custom minutes and validation, editable shortcut settings, and six configured shortcuts at 1×/2× fonts. `SnoozeVisualTest` renders the floating destination at 351 dp wide (90% of the 390 dp phone) within 800 dp height; compact captures use 420 dp available height to check actual scrolling and reachable actions when space is constrained. The Android keyboard itself is not included in these native view captures.
