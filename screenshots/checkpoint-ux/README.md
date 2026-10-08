@@ -9,3 +9,5 @@ These PNGs render the app's actual Android activities, preference rows, and chec
 `SettingsVisualTest` in the habit-chain PR reproduces the new captures and checks readable text, multiline choices, usable touch targets, and visible Save/Cancel controls. Screenshots contain sample habits and use the execution clock. Tests independently verify scheduler and action behavior. Device-specific notification delivery and battery restrictions require device testing.
 
 Images live on a separate evidence branch so feature PR diffs remain focused on source, tests, and documentation.
+
+- `notifications/`: default/customized shared reminder controls, Android channel-settings entry points, the actual four-style popup menu, and a saved Prominent selection. `NotificationVisualTest` in the notification PR reproduces these views at 1×/2× fonts and checks text readability and real toggle/save interactions. Popup captures include the actual native PopupWindow background.
