@@ -98,7 +98,7 @@
     <!-- Checkpoints -->
     <string name="section_checkpoints">Checkpoints</string>
     <string name="add_checkpoint">Add Checkpoint</string>
-    <string name="add_checkpoint_summary">Choose any clock time or percentage of your day</string>
+    <string name="add_checkpoint_summary">Set a reminder time and optionally wait for another checkpoint</string>
     <string name="notification_status_title">Checkpoint Notifications</string>
     <string name="notification_status_ready">Notifications are ready</string>
     <string name="notification_status_blocked">Notifications or a checkpoint channel are blocked. Tap to open notification settings.</string>
