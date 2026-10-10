@@ -5,7 +5,7 @@ Make daily routines progress one checkpoint at a time, explain exactly how the d
 
 ## Evidence and design decisions
 - [OmniFocus availability and sequential actions](https://support.omnigroup.com/documentation/omnifocus/universal/4.3.3/en/glossary/) distinguish a blocked action from an action waiting for a time. Adopt that separation: the existing checkpoint time becomes the earliest reminder time when a predecessor is selected. Keep blocked items visible with an explanation so users can repair their routines.
-- [Todoist reminders](https://www.todoist.com/help/todoist/features/introduction-to-reminders-9PezfU) distinguish default reminder behavior and task reminder setup, and expose configurable snooze. Adopt a shared snooze duration with explicit action text; retain per-checkpoint alert style.
+- [Todoist reminders](https://www.todoist.com/help/todoist/features/introduction-to-reminders-9PezfU) distinguish default reminder behavior and task reminder setup, and expose configurable snooze. Adopt editable snooze shortcuts and a per-reminder duration picker; retain per-checkpoint alert style.
 - [Structured notification customization](https://help.structured.app/en/articles/1870914) makes alert presets and system notification settings discoverable. Provide named sound/vibration presets and direct Android channel settings, with an explanation that Android controls final delivery.
 
 These are patterns selected for Day Meter, not an assertion that another app's full workflow belongs here.
@@ -28,7 +28,7 @@ These are patterns selected for Day Meter, not an assertion that another app's f
 
 ## Notification controls
 - Per-checkpoint Gentle (sound), Silent, Vibrate, and Prominent (sound/vibration, heads-up eligible) presets.
-- Shared snooze choices: 5, 10, 15, 30, or 60 minutes; default stays 10.
+- Snooze opens a duration picker with default shortcuts 5, 10, 15, 30, and 60 minutes and Custom (numeric keyboard, 1–1440 minutes). Shortcuts can be edited globally (1–6 distinct durations). Cancel leaves the reminder unchanged; applying a duration checks that the reminder is still current. Legacy fixed-duration actions keep working.
 - Option to keep reminders until action; explain Android can still dismiss them.
 - Lock-screen detail opt-in; default stays hidden.
 - Separate permission/channel health, reminder behavior, and system channel settings. Do not reset channels users already customized.

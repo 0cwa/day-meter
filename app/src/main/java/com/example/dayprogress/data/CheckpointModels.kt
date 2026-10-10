@@ -8,7 +8,7 @@ import java.nio.charset.StandardCharsets
 import java.util.UUID
 
 enum class CheckpointTriggerType { CLOCK, PERCENT }
-enum class CheckpointNotificationMode { GENTLE, SILENT }
+enum class CheckpointNotificationMode { GENTLE, SILENT, VIBRATE, PROMINENT }
 enum class CheckpointStatus { SCHEDULED, NOTIFIED, SNOOZED, DONE, SKIPPED, MISSED, BLOCKED }
 
 data class Checkpoint(

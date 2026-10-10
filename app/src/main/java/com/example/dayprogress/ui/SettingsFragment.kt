@@ -281,6 +281,34 @@ class SettingsFragment : PreferenceFragmentCompat() {
             true
         }
 
+        findPreference<Preference>(AppPreferences.KEY_SNOOZE_PRESETS)?.apply {
+            updateSnoozePresetsSummary(this)
+            setOnPreferenceClickListener {
+                showSnoozePresetsEditor()
+                true
+            }
+        }
+        findPreference<SwitchPreferenceCompat>(AppPreferences.KEY_REMINDER_PERSISTENT)?.setOnPreferenceChangeListener { _, newValue ->
+            prefs.reminderPersistent = newValue as Boolean
+            refreshReminderControls()
+            true
+        }
+        findPreference<SwitchPreferenceCompat>(AppPreferences.KEY_SHOW_LOCK_SCREEN_DETAILS)?.setOnPreferenceChangeListener { _, newValue ->
+            prefs.showLockScreenDetails = newValue as Boolean
+            refreshReminderControls()
+            true
+        }
+        findPreference<Preference>("notification_channel_settings")?.setOnPreferenceClickListener {
+            MaterialAlertDialogBuilder(requireContext())
+                .setTitle(R.string.notif_system_controls_title)
+                .setItems(R.array.notif_mode_entries) { _, position ->
+                    startActivity(ReminderNotifier.channelSettingsIntent(requireContext(), CheckpointNotificationMode.entries[position]))
+                }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
+            true
+        }
+
         // Actions
         findPreference<Preference>("force_update")?.setOnPreferenceClickListener {
             DayProgressWidgetProvider.refreshWidgetsInBackground(requireContext())
@@ -410,10 +438,14 @@ class SettingsFragment : PreferenceFragmentCompat() {
         triggerGroup.check(if (startsAsPercent) R.id.checkpoint_percent_type else R.id.checkpoint_clock_type)
         percentSeek.progress = existing?.takeIf { startsAsPercent }?.triggerValue ?: 50
         notificationMode.adapter = ArrayAdapter(requireContext(), R.layout.checkpoint_spinner_item,
-            resources.getStringArray(R.array.checkpoint_notification_modes)).apply {
+            resources.getStringArray(R.array.notif_mode_entries)).apply {
                 setDropDownViewResource(R.layout.checkpoint_spinner_item)
             }
-        notificationMode.setSelection(if (existing?.notificationMode == CheckpointNotificationMode.SILENT) 1 else 0)
+        notificationMode.setSelection(existing?.notificationMode?.ordinal ?: 0)
+        view.findViewById<Button>(R.id.checkpoint_channel_settings).setOnClickListener {
+            startActivity(ReminderNotifier.channelSettingsIntent(requireContext(),
+                CheckpointNotificationMode.entries[notificationMode.selectedItemPosition]))
+        }
         markerCheck.isChecked = existing?.showOnWidget ?: true
         enabledCheck.isChecked = existing?.enabled ?: true
 
@@ -505,11 +537,7 @@ class SettingsFragment : PreferenceFragmentCompat() {
                     daysMask = daysMask,
                     predecessorId = predecessorId,
                     delayMinutes = delay,
-                    notificationMode = if (notificationMode.selectedItemPosition == 1) {
-                        CheckpointNotificationMode.SILENT
-                    } else {
-                        CheckpointNotificationMode.GENTLE
-                    },
+                    notificationMode = CheckpointNotificationMode.entries[notificationMode.selectedItemPosition],
                     showOnWidget = markerCheck.isChecked,
                     enabled = enabledCheck.isChecked
                 )
@@ -545,6 +573,7 @@ class SettingsFragment : PreferenceFragmentCompat() {
                     return@setOnClickListener
                 }
                 dialog.dismiss()
+                ReminderNotifier.refreshActiveReminders(requireContext())
                 rebuildCheckpointPreferences()
                 updateEverything(recomputeReminders = true)
                 requestNotificationPermissionIfNeeded(checkpoint.enabled)
@@ -611,9 +640,7 @@ class SettingsFragment : PreferenceFragmentCompat() {
     }
 
     private fun checkpointSummary(checkpoint: Checkpoint): String {
-        val mode = getString(
-            if (checkpoint.notificationMode == CheckpointNotificationMode.SILENT) R.string.checkpoint_silent else R.string.checkpoint_gentle
-        )
+        val mode = resources.getStringArray(R.array.notif_mode_entries)[checkpoint.notificationMode.ordinal]
         val summary = if (checkpoint.triggerType == CheckpointTriggerType.CLOCK) {
             getString(R.string.checkpoint_summary_clock, formatClockSummary(checkpoint.triggerValue), formatDays(checkpoint.daysMask), mode)
         } else {
@@ -710,6 +737,53 @@ class SettingsFragment : PreferenceFragmentCompat() {
         ) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+    }
+
+    private fun updateSnoozePresetsSummary(preference: Preference) {
+        preference.summary = getString(R.string.notif_snooze_presets_summary, prefs.snoozePresets.joinToString(", "))
+    }
+
+    private fun showSnoozePresetsEditor() {
+        val input = EditText(requireContext()).apply {
+            id = R.id.snooze_presets_input
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+            isSingleLine = false
+            setText(prefs.snoozePresets.joinToString(", "))
+            hint = getString(R.string.notif_snooze_presets_hint)
+            val inset = (24 * resources.displayMetrics.density).toInt()
+            setPadding(inset, paddingTop, inset, paddingBottom)
+        }
+        val dialog = MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.notif_snooze_title)
+            .setMessage(R.string.notif_snooze_presets_help)
+            .setView(input)
+            .setPositiveButton(R.string.checkpoint_save, null)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setNeutralButton(R.string.notif_snooze_presets_reset, null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                input.setText("5, 10, 15, 30, 60")
+                input.error = null
+            }
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val parts = input.text.toString().split(',').map { it.trim().toIntOrNull() }
+                if (parts.size !in 1..6 || parts.any { it == null || it !in 1..1440 } || parts.distinct().size != parts.size) {
+                    input.error = getString(R.string.notif_snooze_presets_error)
+                    return@setOnClickListener
+                }
+                prefs.snoozePresets = parts.filterNotNull()
+                findPreference<Preference>(AppPreferences.KEY_SNOOZE_PRESETS)?.let { updateSnoozePresetsSummary(it) }
+                dialog.dismiss()
+            }
+        }
+        dialog.show()
+    }
+
+    private fun refreshReminderControls() {
+        ReminderNotifier.refreshActiveReminders(requireContext())
+        ReminderScheduler.reschedule(requireContext())
+        refreshPermissionState()
     }
 
     private fun openNotificationSettings() {
@@ -899,6 +973,10 @@ class SettingsFragment : PreferenceFragmentCompat() {
             manualStartDayId = null
             isManualLocked = false
             lastResetDate = null
+            snoozeMinutes = 10
+            snoozePresets = listOf(5, 10, 15, 30, 60)
+            reminderPersistent = false
+            showLockScreenDetails = false
         }
 
         ReminderTransitions.run {
