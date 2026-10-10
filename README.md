@@ -1,5 +1,7 @@
 # day-meter
 
+**Maintained fork:** [0cwa/day-meter](https://github.com/0cwa/day-meter), based on [Kybernetria/day-meter](https://github.com/Kybernetria/day-meter). This fork develops and releases its own improvements while retaining upstream attribution and the AGPL-3.0 license. See [FORK.md](FORK.md) for our branch, upgrade, and release policy.
+
 A small Android widget app that tracks how much of your configured day has passed.
 
 ## What it does
@@ -63,7 +65,7 @@ provided. Debug builds remain unsigned by the release key.
 Anyone can verify a downloaded release asset's provenance with GitHub CLI:
 
 ```bash
-gh attestation verify day-meter-v1.0.36.apk --repo Kybernetria/day-meter
+gh attestation verify day-meter-v1.0.36.apk --repo 0cwa/day-meter
 ```
 
 GitHub's **Verified** badge on commits and tags is separate from Android APK
@@ -71,4 +73,6 @@ signing and artifact attestations. To receive that badge, create the release tag
 with a GPG, SSH, or S/MIME key added to the GitHub account that creates it.
 
 ## Project status
-This repo is focused on keeping the app simple and robust.
+This is the actively maintained `0cwa` fork. We integrated settings clarity, completion-gated habit chains, custom reminder/snooze controls, and their UX evidence as fork pull requests [#1](https://github.com/0cwa/day-meter/pull/1), [#2](https://github.com/0cwa/day-meter/pull/2), [#3](https://github.com/0cwa/day-meter/pull/3), and [#4](https://github.com/0cwa/day-meter/pull/4). Future changes should target **this fork's** `main` branch; upstream changes are considered selectively, not merged automatically.
+
+**Install identity:** The Android `applicationId` is still `com.example.dayprogress`. This is intentional for existing-install compatibility; a separately installable/rebranded variant would need an explicit migration plan before changing that ID or the signing key. See [FORK.md](FORK.md).
