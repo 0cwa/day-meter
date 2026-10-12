@@ -108,8 +108,11 @@ gh workflow run release.yml --repo 0cwa/day-meter --ref "v$version"
 If an earlier published release has the wrong tag, **do not move or reuse its
 tag**: retire the invalid release and create a new tag from a tested commit
 with matching Android metadata. The separate **Release health** workflow
-checks for failed release runs and missing assets, scans published releases
-daily, and opens one actionable issue until a maintainer resolves the problem.
+checks for failed release runs and missing assets and scans published releases
+daily. Failures produce red Actions runs with error annotations and a run
+summary. The monitor also opens one actionable issue **if GitHub Issues are
+enabled**; this fork currently has Issues disabled, so enable them under
+Settings → General → Features to receive issue alerts.
 Release-environment approval and signing secrets still require maintainer setup.
 
 Verify downloaded artifacts using the published checksum file:
