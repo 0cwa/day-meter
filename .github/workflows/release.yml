@@ -194,6 +194,16 @@ jobs:
         if: always()
         run: rm -f "${{ runner.temp }}/day-meter-release.jks"
 
+      - name: Verify Android APK and App Bundle signatures
+        run: |
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose app-source/app/build/outputs/apk/release/app-release.apk
+          bundle_check="$(jarsigner -verify app-source/app/build/outputs/bundle/release/app-release.aab 2>&1)"
+          echo "$bundle_check"
+          if ! grep -q 'jar verified.' <<< "$bundle_check"; then
+            echo "::error title=Unsigned App Bundle::The release AAB has not passed jarsigner verification."
+            exit 1
+          fi
+
       - name: Verify packaged APK versionName and source commit
         run: |
           if [[ "$(git -C app-source rev-parse HEAD)" != "$TAGGED_SHA" ]]; then
