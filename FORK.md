@@ -32,9 +32,11 @@ git log --oneline main..upstream/main
 
 ## Release and package identity
 
-- This fork has its **own** GitHub Actions release workflow. It needs a `release` environment and the `ANDROID_KEYSTORE_BASE64`, `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_ALIAS`, and `RELEASE_KEY_PASSWORD` secrets configured **in this repository** before any signed release.
-- Only push a `v<versionName>` tag when the tested app version and signing setup are ready. See the main README for details.
-- Check the release artifacts with `gh attestation verify <apk-file> --repo 0cwa/day-meter`.
+- This fork has its **own** guarded GitHub Actions release workflow. Configure the `release` environment and its `ANDROID_KEYSTORE_BASE64`, `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_ALIAS`, and `RELEASE_KEY_PASSWORD` secrets **in this repository**. No missing-secret fallback to unsigned artifacts is allowed.
+- Releases use immutable-intent `vMAJOR.MINOR.PATCH` tags matching `app/build.gradle` `versionName` exactly; bump `versionCode` for updates, merge and test on `main`, then push a fresh version tag. Do not move tags or pre-create releases manually.
+- A release is published only after signed APK/AAB builds, checksums, attestations, and GitHub asset digest validation. Retry an existing tag from **Actions**, never from `main`. An existing partially published release is repaired only if its assets do not conflict.
+- The separate release-health workflow flags failed release runs, scans published assets daily, and creates an alert issue. Protect `main` and `v*` tags with repository rulesets and limit who can approve the `release` environment.
+- See the README release runbook. Check downloaded artifacts with `sha256sum -c <checksums-file>` and `gh attestation verify <apk-file> --repo 0cwa/day-meter`.
 - The current Android application ID remains `com.example.dayprogress`, matching the original. This preserves the expected package identity for existing users but does **not** guarantee update compatibility if the signing certificate differs. Android apps with the same ID cannot be installed side-by-side for a given user.
 - Do not change the application ID, signing certificate, or persistent preference/storage schema casually: these affect app upgrades and user data. If we want a distinct installable product, first decide on a new application ID and a data migration/backup approach.
 - Retain upstream attribution and comply with the existing AGPL-3.0 license when distributing binaries or modified source.
