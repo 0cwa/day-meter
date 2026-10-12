@@ -3,8 +3,8 @@ set -euo pipefail
 
 # Exercise the real release publication script against a stateful fake gh CLI.
 # No secrets, GitHub tokens, or release mutations are used in these tests.
-version="$(bash tools/read_version_name.sh)"
-tag="v$version"
+# Exercise the existing v1.1 release, not only three-component release names.
+tag="v1.1"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/dist"
