@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Release regression checks run on every PR without signing keys or GitHub API.
-bash -n tools/check_release_tag.sh tools/publish_release.sh tools/check_release_health.sh
+bash -n tools/check_release_tag.sh tools/publish_release.sh tools/check_release_health.sh tools/test_release_publish.sh
 version="$(bash tools/read_version_name.sh)"
 bash tools/check_release_tag.sh "v$version"
 
@@ -21,6 +21,8 @@ if bash tools/check_release_tag.sh "$bad_tag" >"$tmp/output" 2>&1; then
   exit 1
 fi
 grep -q 'Tag/app version mismatch' "$tmp/output"
+
+bash tools/test_release_publish.sh
 
 # A fake gh command verifies that the watchdog detects incomplete releases
 # and does not depend on network access in unit tests.
