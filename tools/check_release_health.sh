@@ -12,11 +12,13 @@ gh api --paginate "repos/$repo/releases?per_page=100" | jq -s 'add // []' > "$re
 failures=0
 checked=0
 
-# A tag may be pushed without a workflow run (for example by another workflow
-# using GITHUB_TOKEN). Detect a missing release for the current app version,
-# without treating historical tags inherited from upstream as new releases.
-expected_tag="v$(bash tools/read_version_name.sh)"
-if gh api "repos/$repo/git/ref/tags/$expected_tag" >/dev/null 2>&1; then
+# A tag can be pushed without triggering a release workflow. The monitor
+# supplies the latest version tag reachable from main, independently of the
+# Android versionName in app/build.gradle. Historical forked tags do not cause
+# false alerts when a more recent release is already present.
+expected_tag="${RELEASE_EXPECTED_TAG:-}"
+if [[ -n "$expected_tag" ]]; then
+  bash tools/check_release_tag.sh "$expected_tag"
   if ! jq -e --arg tag "$expected_tag" '
     [.[] | select(.tag_name == $tag and .draft == false)] | length == 1
   ' "$releases" >/dev/null; then
@@ -29,8 +31,8 @@ while IFS= read -r release; do
   tag="$(jq -r '.tag_name' <<<"$release")"
   checked=$((checked + 1))
 
-  if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-    echo "::error title=Invalid published release::Published tag '$tag' is not vMAJOR.MINOR.PATCH."
+  if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))?$ ]]; then
+    echo "::error title=Invalid published release::Published tag '$tag' is not vMAJOR.MINOR[.PATCH]."
     failures=$((failures + 1))
   fi
 
