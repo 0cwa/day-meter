@@ -4,15 +4,19 @@ on:
   push:
     tags:
       - "v*"
-  # A release made in the GitHub UI must also get its binaries, not stay empty.
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish or repair (e.g. v1.1)"
+        required: true
+        type: string
 
-# Tag push and a manual GitHub release can generate two events for the same tag.
-# Queue instead of cancelling publication. The publishing script is idempotent.
+# Tag pushes, manually published GitHub Releases, and manual recoveries can
+# overlap. Queue them rather than cancel a release halfway through uploading.
 concurrency:
-  group: android-release-${{ github.event.release.tag_name || github.ref_name }}
+  group: android-release-${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -20,47 +24,89 @@ permissions:
 
 jobs:
   preflight:
-    name: Validate release tag
-    runs-on: ubuntu-latest
+    name: Verify immutable release tag and source
+    runs-on: ubuntu-24.04
+    outputs:
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      tagged_sha: ${{ steps.ancestry.outputs.tagged_sha }}
     steps:
-      - name: Require an existing version tag
+      - name: Resolve release tag
+        id: resolve
         env:
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
+          MANUAL_TAG: ${{ inputs.tag || '' }}
+          RELEASE_EVENT_TAG: ${{ github.event.release.tag_name || '' }}
         run: |
-          if [[ "$REF_TYPE" != "tag" ]]; then
-            echo "::error title=Use a release tag::Selected '$REF_NAME' ($REF_TYPE). First merge the version bump into main, then push vMAJOR.MINOR.PATCH; manual reruns must select that tag."
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            tag="$MANUAL_TAG"
+          elif [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
+            tag="$RELEASE_EVENT_TAG"
+          else
+            if [[ "$GITHUB_REF_TYPE" != "tag" ]]; then
+              echo "::error title=Not a version tag::Expected a tag push."
+              exit 1
+            fi
+            tag="$GITHUB_REF_NAME"
+          fi
+          if [[ -z "$tag" ]]; then
+            echo "::error title=Missing release tag::Provide an existing tag, for example v1.1."
             exit 1
           fi
+          echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Check out tagged sources
+      - name: Check out trusted release scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: pipeline
+
+      - name: Validate release tag syntax
+        working-directory: pipeline
+        env:
+          RELEASE_TAG: ${{ steps.resolve.outputs.release_tag }}
+        run: bash tools/check_release_tag.sh "$RELEASE_TAG"
+
+      - name: Check out exact tagged application sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ steps.resolve.outputs.release_tag }}
           fetch-depth: 0
+          path: app-source
 
-      - name: Check tag matches Android app version
-        run: bash tools/check_release_tag.sh "$GITHUB_REF_NAME"
-
-      - name: Require tested main-branch ancestry
+      - name: Require a tag pointing into reviewed main history
+        id: ancestry
+        working-directory: app-source
+        env:
+          RELEASE_TAG: ${{ steps.resolve.outputs.release_tag }}
         run: |
-          git fetch --no-tags origin main
-          if ! git merge-base --is-ancestor HEAD FETCH_HEAD; then
-            echo "::error title=Unreviewed release source::Tag '$GITHUB_REF_NAME' must point to a commit already merged into main."
+          tagged_sha="$(git rev-parse HEAD)"
+          expected_sha="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          if [[ "$tagged_sha" != "$expected_sha" ]]; then
+            echo "::error title=Wrong source checkout::Requested tag did not resolve to the checked-out commit."
             exit 1
           fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$tagged_sha" FETCH_HEAD; then
+            echo "::error title=Unreviewed release source::Tag $RELEASE_TAG must point to a commit already merged into main."
+            exit 1
+          fi
+          echo "tagged_sha=$tagged_sha" >> "$GITHUB_OUTPUT"
+          echo "Validated $RELEASE_TAG at $tagged_sha."
 
   release:
     name: Test, sign, attest, and publish
     needs: preflight
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       contents: write
       attestations: write
       id-token: write
+    env:
+      RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+      TAGGED_SHA: ${{ needs.preflight.outputs.tagged_sha }}
 
     steps:
-      - name: Check release signing configuration early
+      - name: Require Android signing secrets
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
@@ -69,13 +115,22 @@ jobs:
         run: |
           for name in ANDROID_KEYSTORE_BASE64 RELEASE_STORE_PASSWORD RELEASE_KEY_ALIAS RELEASE_KEY_PASSWORD; do
             if [[ -z "${!name}" ]]; then
-              echo "::error title=Missing signing secret::Set $name in the release environment in this repository."
+              echo "::error title=Missing signing secret::Configure $name in the release environment of this repository."
               exit 1
             fi
           done
 
-      - name: Check out tagged sources
+      - name: Check out trusted release pipeline
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: pipeline
+
+      - name: Check out exact tagged application sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ needs.preflight.outputs.release_tag }}
+          path: app-source
 
       - name: Validate Gradle Wrapper
         uses: gradle/actions/wrapper-validation@90ddb51e90a5fd9ba75f40cf85156b7b41bf76a3 # v6
@@ -86,6 +141,10 @@ jobs:
           distribution: temurin
           java-version: "17"
           cache: gradle
+          cache-dependency-path: |
+            app-source/**/*.gradle
+            app-source/gradle/wrapper/gradle-wrapper.properties
+            app-source/gradle.properties
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4
@@ -95,7 +154,11 @@ jobs:
       - name: Install Android build dependencies
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
-      - name: Test and lint release sources
+      - name: Derive packaged versionName from the release tag
+        run: bash pipeline/tools/prepare_release_source.sh "$RELEASE_TAG" app-source/app/build.gradle
+
+      - name: Test and lint tagged release sources
+        working-directory: app-source
         run: ./gradlew testDebugUnitTest lintRelease --stacktrace
 
       - name: Restore and validate release keystore
@@ -111,6 +174,7 @@ jobs:
           keytool -list -keystore "$RELEASE_STORE_FILE" -storepass "$RELEASE_STORE_PASSWORD" -alias "$RELEASE_KEY_ALIAS" >/dev/null
 
       - name: Build signed APK and Android App Bundle
+        working-directory: app-source
         env:
           RELEASE_STORE_FILE: ${{ runner.temp }}/day-meter-release.jks
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
@@ -122,22 +186,39 @@ jobs:
         if: always()
         run: rm -f "${{ runner.temp }}/day-meter-release.jks"
 
-      - name: Prepare distribution with portable checksums
+      - name: Verify packaged APK versionName and source commit
         run: |
-          mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk "dist/day-meter-${GITHUB_REF_NAME}.apk"
-          cp app/build/outputs/bundle/release/app-release.aab "dist/day-meter-${GITHUB_REF_NAME}.aab"
-          (cd dist && sha256sum --binary "day-meter-${GITHUB_REF_NAME}.apk" "day-meter-${GITHUB_REF_NAME}.aab" > "day-meter-${GITHUB_REF_NAME}-SHA256SUMS.txt")
+          if [[ "$(git -C app-source rev-parse HEAD)" != "$TAGGED_SHA" ]]; then
+            echo "::error title=Source provenance mismatch::The APK was not built from the validated tagged commit."
+            exit 1
+          fi
+          expected="${RELEASE_TAG#v}"
+          badging="$("$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging app-source/app/build/outputs/apk/release/app-release.apk)"
+          package_line="$(sed -n '/^package:/p' <<< "$badging")"
+          actual="$(sed -nE "s/.*versionName='([^']+)'.*/\1/p" <<< "$package_line")"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "::error title=Packaged Android version mismatch::APK versionName '$actual' does not match release tag '$RELEASE_TAG'."
+            exit 1
+          fi
+          echo "Signed APK versionName $actual matches $RELEASE_TAG (tagged commit $TAGGED_SHA)."
 
-      - name: Attest release artifacts
+      - name: Prepare checksummed release artifacts
+        run: |
+          mkdir -p pipeline/dist
+          cp app-source/app/build/outputs/apk/release/app-release.apk "pipeline/dist/day-meter-${RELEASE_TAG}.apk"
+          cp app-source/app/build/outputs/bundle/release/app-release.aab "pipeline/dist/day-meter-${RELEASE_TAG}.aab"
+          (cd pipeline/dist && sha256sum --binary "day-meter-${RELEASE_TAG}.apk" "day-meter-${RELEASE_TAG}.aab" > "day-meter-${RELEASE_TAG}-SHA256SUMS.txt")
+
+      - name: Attest verified release artifacts
         uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4
         with:
           subject-path: |
-            dist/*.apk
-            dist/*.aab
-            dist/*-SHA256SUMS.txt
+            pipeline/dist/*.apk
+            pipeline/dist/*.aab
+            pipeline/dist/*-SHA256SUMS.txt
 
-      - name: Publish or repair the GitHub Release
+      - name: Publish or safely repair the GitHub Release
+        working-directory: pipeline
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash tools/publish_release.sh "$GITHUB_REF_NAME"
+        run: bash tools/publish_release.sh "$RELEASE_TAG"
