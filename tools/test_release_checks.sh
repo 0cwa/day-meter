@@ -30,8 +30,15 @@ mkdir -p "$tmp/bin"
 cat > "$tmp/bin/gh" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "$1" == api && "$2" == --paginate ]] || exit 2
-cat "$MOCK_RELEASES_FILE"
+[[ "$1" == api ]] || exit 2
+if [[ "$2" == --paginate ]]; then
+  cat "$MOCK_RELEASES_FILE"
+elif [[ "$2" == repos/*/git/ref/tags/* ]]; then
+  [[ "${MOCK_TAG_EXISTS:-false}" == true ]] || exit 1
+  printf '%s\\n' '{}'
+else
+  exit 2
+fi
 MOCK
 chmod +x "$tmp/bin/gh"
 export PATH="$tmp/bin:$PATH" GITHUB_REPOSITORY="0cwa/day-meter"
@@ -62,5 +69,14 @@ MOCK_RELEASES_FILE="$tmp/invalid-tag.json" bash tools/check_release_health.sh >"
   exit 1
 }
 grep -q 'Invalid published release' "$tmp/output"
+
+# A current app-version tag with no published release must also be detected.
+printf '%s\\n' '[]' > "$tmp/no-releases.json"
+if MOCK_TAG_EXISTS=true MOCK_RELEASES_FILE="$tmp/no-releases.json" \\
+    bash tools/check_release_health.sh >"$tmp/output" 2>&1; then
+  echo "Health monitor missed a version tag with no published release" >&2
+  exit 1
+fi
+grep -q 'Tag without published release' "$tmp/output"
 
 echo "Release version and health monitor regression checks passed."
