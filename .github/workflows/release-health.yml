@@ -1,0 +1,66 @@
+name: Release health
+
+on:
+  workflow_run:
+    workflows: ["Release Android app"]
+    types: [completed]
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+# Prevent duplicate issues if the scheduled scan overlaps a failed release.
+concurrency:
+  group: day-meter-release-health
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  monitor:
+    name: Detect failed or incomplete releases
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out monitor scripts from the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Check publishing result and release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_RESULT: ${{ github.event.workflow_run.conclusion || '' }}
+          RELEASE_RUN_URL: ${{ github.event.workflow_run.html_url || '' }}
+        run: |
+          if [[ -n "$RELEASE_RESULT" && "$RELEASE_RESULT" != "success" ]]; then
+            echo "::error title=Release workflow failed::Failed or cancelled publish: $RELEASE_RUN_URL"
+            exit 1
+          fi
+          bash tools/check_release_health.sh
+
+      - name: File one actionable alert issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_RUN_URL: ${{ github.event.workflow_run.html_url || '' }}
+          MONITOR_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Release pipeline alert: failed or incomplete release"
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title \
+            --jq '.[] | select(.title == "Release pipeline alert: failed or incomplete release") | .number' | head -n 1)"
+          if [[ -n "$existing" ]]; then
+            echo "Release alert issue #$existing is already open."
+            exit 0
+          fi
+          {
+            echo "The automatic release health monitor detected a failed release workflow or published release missing its signed APK, AAB, or SHA-256 checksums."
+            echo
+            echo "- Release runs: https://github.com/$GITHUB_REPOSITORY/actions/workflows/release.yml"
+            echo "- Published releases: https://github.com/$GITHUB_REPOSITORY/releases"
+            echo "- Monitoring run: $MONITOR_RUN_URL"
+            if [[ -n "$RELEASE_RUN_URL" ]]; then
+              echo "- Failed release run: $RELEASE_RUN_URL"
+            fi
+            echo
+            echo "Check the failed steps, Android versionName vs. tag, release-environment signing secrets, and release asset digests. Do not replace a mismatched published asset or move a release tag. Close this issue only after verifying the fixed release."
+          } > release-alert.md
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file release-alert.md
