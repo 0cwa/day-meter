@@ -29,6 +29,7 @@ jobs:
     outputs:
       release_tag: ${{ steps.resolve.outputs.release_tag }}
       tagged_sha: ${{ steps.ancestry.outputs.tagged_sha }}
+      pipeline_sha: ${{ steps.revision.outputs.pipeline_sha }}
     steps:
       - name: Resolve release tag
         id: resolve
@@ -58,6 +59,10 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: pipeline
+
+      - name: Pin the trusted release automation to this commit
+        id: revision
+        run: echo "pipeline_sha=$(git -C pipeline rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Validate release tag syntax
         working-directory: pipeline
@@ -104,6 +109,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
       TAGGED_SHA: ${{ needs.preflight.outputs.tagged_sha }}
+      PIPELINE_SHA: ${{ needs.preflight.outputs.pipeline_sha }}
 
     steps:
       - name: Require Android signing secrets
@@ -120,10 +126,10 @@ jobs:
             fi
           done
 
-      - name: Check out trusted release pipeline
+      - name: Check out pinned release pipeline
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ needs.preflight.outputs.pipeline_sha }}
           path: pipeline
 
       - name: Check out exact tagged application sources
@@ -155,7 +161,9 @@ jobs:
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
       - name: Derive packaged versionName from the release tag
-        run: bash pipeline/tools/prepare_release_source.sh "$RELEASE_TAG" app-source/app/build.gradle
+        run: |
+          bash pipeline/tools/prepare_release_source.sh "$RELEASE_TAG" app-source/app/build.gradle
+          echo "Release automation commit: \`$PIPELINE_SHA\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Test and lint tagged release sources
         working-directory: app-source
