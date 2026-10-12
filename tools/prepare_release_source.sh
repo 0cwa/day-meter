@@ -43,10 +43,10 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   {
     echo "### Android release version metadata"
     echo
-    echo "- GitHub release tag: `$tag`"
-    echo "- Tagged commit's original Android versionName: `$old_version`"
-    echo "- Release APK/AAB versionName: `$new_version`"
-    echo "- Android versionCode (unchanged from tagged source): `$version_codes`"
+    echo "- GitHub release tag: $tag"
+    echo "- Tagged commit's original Android versionName: $old_version"
+    echo "- Release APK/AAB versionName: $new_version"
+    echo "- Android versionCode (unchanged from tagged source): $version_codes"
     echo
     echo "Only the build working tree's versionName is adjusted; the tag and its source commit are unchanged."
   } >> "$GITHUB_STEP_SUMMARY"
