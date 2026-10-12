@@ -35,7 +35,7 @@ if [[ "$2" == --paginate ]]; then
   cat "$MOCK_RELEASES_FILE"
 elif [[ "$2" == repos/*/git/ref/tags/* ]]; then
   [[ "${MOCK_TAG_EXISTS:-false}" == true ]] || exit 1
-  printf '%s\\n' '{}'
+  printf '%s\n' '{}'
 else
   exit 2
 fi
@@ -71,9 +71,8 @@ MOCK_RELEASES_FILE="$tmp/invalid-tag.json" bash tools/check_release_health.sh >"
 grep -q 'Invalid published release' "$tmp/output"
 
 # A current app-version tag with no published release must also be detected.
-printf '%s\\n' '[]' > "$tmp/no-releases.json"
-if MOCK_TAG_EXISTS=true MOCK_RELEASES_FILE="$tmp/no-releases.json" \\
-    bash tools/check_release_health.sh >"$tmp/output" 2>&1; then
+printf '%s\n' '[]' > "$tmp/no-releases.json"
+if MOCK_TAG_EXISTS=true MOCK_RELEASES_FILE="$tmp/no-releases.json" bash tools/check_release_health.sh >"$tmp/output" 2>&1; then
   echo "Health monitor missed a version tag with no published release" >&2
   exit 1
 fi
