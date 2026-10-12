@@ -37,13 +37,38 @@ jobs:
           fi
           bash tools/check_release_health.sh
 
-      - name: File one actionable alert issue
+      - name: Record actionable failure in the Actions run summary
+        if: failure()
+        env:
+          RELEASE_RUN_URL: ${{ github.event.workflow_run.html_url || '' }}
+        run: |
+          {
+            echo "## Release pipeline needs attention"
+            echo
+            echo "A release run failed or published assets are incomplete."
+            echo
+            echo "- [Release workflow](https://github.com/$GITHUB_REPOSITORY/actions/workflows/release.yml)"
+            echo "- [Published releases](https://github.com/$GITHUB_REPOSITORY/releases)"
+            if [[ -n "$RELEASE_RUN_URL" ]]; then
+              echo "- [Failed release run]($RELEASE_RUN_URL)"
+            fi
+            echo
+            echo "Fix version/tag mismatches, validate signing environment, and retry from an existing valid tag."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: File an alert issue when GitHub Issues are enabled
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_RUN_URL: ${{ github.event.workflow_run.html_url || '' }}
           MONITOR_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # Some forks disable GitHub Issues. The prior step remains failed and
+          # records an Actions error/summary even when issue alerts are unavailable.
+          if [[ "$(gh api "repos/$GITHUB_REPOSITORY" --jq '.has_issues')" != "true" ]]; then
+            echo "::warning title=GitHub Issues disabled::Enable Issues in repository settings to receive automatic incident issues. Release health is still reported as a failed Actions run."
+            exit 0
+          fi
           title="Release pipeline alert: failed or incomplete release"
           existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title \
             --jq '.[] | select(.title == "Release pipeline alert: failed or incomplete release") | .number' | head -n 1)"
