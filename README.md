@@ -40,37 +40,87 @@ APK output:
 
 ## Releases
 
-Pushing a tag matching the Android version (for example, `v1.0.36`) runs the
-release workflow. It builds an APK and Android App Bundle, signs both with the
-release key, publishes them as a GitHub Release, and creates a GitHub artifact
-attestation for each release file.
+Releases are **explicit and tag-driven**; merging a pull request does not
+publish an Android build. A release tag must be **vMAJOR.MINOR.PATCH** and match
+the `versionName` in `app/build.gradle` exactly (for example,
+`v1.0.36` for `versionName = "1.0.36"`). Increase `versionCode` whenever
+shipping an update to Android users.
 
-Before the first release, create a GitHub environment named `release` and add
-these environment secrets:
+### One-time repository setup
 
-- `ANDROID_KEYSTORE_BASE64` — the Base64-encoded release `.jks`/`.keystore` file
+Create a GitHub Actions environment named `release` in **0cwa/day-meter**
+and configure these environment secrets:
+
+- `ANDROID_KEYSTORE_BASE64` — the Base64-encoded release `.jks`/`.keystore`
 - `RELEASE_STORE_PASSWORD`
 - `RELEASE_KEY_ALIAS`
 - `RELEASE_KEY_PASSWORD`
 
-For example, encode the keystore without line wrapping:
-
+Encode the keystore without line wrapping:
 ```bash
 base64 < release-keystore.jks | tr -d '\n'
 ```
 
-The release Gradle tasks intentionally fail unless all four signing values are
-provided. Debug builds remain unsigned by the release key.
+Store the keystore securely outside the repository. Reuse the correct signing
+certificate for app upgrades; changing the key can prevent existing installs
+from updating. The release job **fails closed** if any signing secret is missing.
+Do not publish debug-signed or unsigned binaries instead.
 
-Anyone can verify a downloaded release asset's provenance with GitHub CLI:
+Repository maintainers should require passing Android CI and review before
+merging to `main`, protect `v*` tags from deletion/rewrites with a tag
+ruleset, and restrict the `release` environment to intended release refs.
+
+### Prepare and publish a version
+
+1. Bump `versionName` and `versionCode` in `app/build.gradle`, merge
+   the change into `main`, and confirm Android CI passed.
+2. Ensure the release keystore and four environment secrets are configured.
+3. Tag the tested commit on `main` and push the tag:
 
 ```bash
+git switch main
+git pull --ff-only
+version="$(bash tools/read_version_name.sh)"
+bash tools/check_release_tag.sh "v$version"
+git tag -a "v$version" -m "Day Meter $version"
+git push origin "v$version"
+```
+
+Use a signed annotated tag when a GitHub-registered signing key is available.
+Do **not** create a release manually in the GitHub UI ahead of the pipeline.
+A manual GitHub Release does trigger the release workflow too, but may
+temporarily appear empty and will fail if its version is invalid.
+
+The release workflow validates tag/version consistency and main-branch
+ancestry, runs tests and lint, builds a **signed APK and AAB**, generates
+portable SHA-256 checksums, and attests the assets. It creates a **draft**
+GitHub Release, uploads and verifies GitHub-computed asset digests, and only
+then publishes the complete release. A rerun can fill missing assets in an
+existing release without overwriting different binaries.
+
+To rerun a failed release manually, use **Actions → Release Android app →
+Run workflow** and **select the existing version tag**, not `main`:
+
+```bash
+gh workflow run release.yml --repo 0cwa/day-meter --ref "v$version"
+```
+
+If an earlier published release has the wrong tag, **do not move or reuse its
+tag**: retire the invalid release and create a new tag from a tested commit
+with matching Android metadata. The separate **Release health** workflow
+checks for failed release runs and missing assets, scans published releases
+daily, and opens one actionable issue until a maintainer resolves the problem.
+Release-environment approval and signing secrets still require maintainer setup.
+
+Verify downloaded artifacts using the published checksum file:
+
+```bash
+sha256sum -c day-meter-v1.0.36-SHA256SUMS.txt
 gh attestation verify day-meter-v1.0.36.apk --repo 0cwa/day-meter
 ```
 
-GitHub's **Verified** badge on commits and tags is separate from Android APK
-signing and artifact attestations. To receive that badge, create the release tag
-with a GPG, SSH, or S/MIME key added to the GitHub account that creates it.
+GitHub's **Verified** badge on commits/tags is distinct from APK signing and
+artifact attestations.
 
 ## Project status
 This is the actively maintained `0cwa` fork. We integrated settings clarity, completion-gated habit chains, custom reminder/snooze controls, and their UX evidence as fork pull requests [#1](https://github.com/0cwa/day-meter/pull/1), [#2](https://github.com/0cwa/day-meter/pull/2), [#3](https://github.com/0cwa/day-meter/pull/3), and [#4](https://github.com/0cwa/day-meter/pull/4). Future changes should target **this fork's** `main` branch; upstream changes are considered selectively, not merged automatically.
