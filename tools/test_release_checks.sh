@@ -29,10 +29,12 @@ fi
 grep -q 'Tag/app version mismatch' "$tmp/output"
 
 # Production build edits only a temporary copy of the Gradle metadata.
+original_version_code="$(sed -nE 's/^[[:space:]]*versionCode[[:space:]]*=?[[:space:]]*([0-9]+).*/\1/p' app/build.gradle)"
 cp app/build.gradle "$tmp/build.gradle"
 bash tools/prepare_release_source.sh v1.1 "$tmp/build.gradle"
 [[ "$(bash tools/read_version_name.sh "$tmp/build.gradle")" == "1.1" ]]
-grep -Eq '^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*36([[:space:]]|$)' "$tmp/build.gradle"
+prepared_version_code="$(sed -nE 's/^[[:space:]]*versionCode[[:space:]]*=?[[:space:]]*([0-9]+).*/\1/p' "$tmp/build.gradle")"
+[[ "$prepared_version_code" == "$original_version_code" ]]
 bash tools/check_release_tag.sh v1.1 "$tmp/build.gradle"
 bash tools/prepare_release_source.sh v1.1.0 "$tmp/build.gradle"
 [[ "$(bash tools/read_version_name.sh "$tmp/build.gradle")" == "1.1.0" ]]
