@@ -4,30 +4,78 @@ on:
   push:
     tags:
       - "v*"
+  # A release made in the GitHub UI must also get its binaries, not stay empty.
+  release:
+    types: [published]
   workflow_dispatch:
 
+# Tag push and a manual GitHub release can generate two events for the same tag.
+# Queue instead of cancelling publication. The publishing script is idempotent.
+concurrency:
+  group: android-release-${{ github.event.release.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
 permissions:
-  contents: write
-  attestations: write
-  id-token: write
+  contents: read
 
 jobs:
-  release:
-    name: Build, sign, attest, and release
+  preflight:
+    name: Validate release tag
     runs-on: ubuntu-latest
-    environment: release
-
     steps:
-      - name: Require a version tag
-        if: github.ref_type != 'tag'
+      - name: Require an existing version tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          echo "Run this workflow from an existing v<version> tag."
-          exit 1
+          if [[ "$REF_TYPE" != "tag" ]]; then
+            echo "::error title=Use a release tag::Selected '$REF_NAME' ($REF_TYPE). First merge the version bump into main, then push vMAJOR.MINOR.PATCH; manual reruns must select that tag."
+            exit 1
+          fi
 
-      - name: Check out source
+      - name: Check out tagged sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+
+      - name: Check tag matches Android app version
+        run: bash tools/check_release_tag.sh "$GITHUB_REF_NAME"
+
+      - name: Require tested main-branch ancestry
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor HEAD FETCH_HEAD; then
+            echo "::error title=Unreviewed release source::Tag '$GITHUB_REF_NAME' must point to a commit already merged into main."
+            exit 1
+          fi
+
+  release:
+    name: Test, sign, attest, and publish
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+
+    steps:
+      - name: Check release signing configuration early
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          for name in ANDROID_KEYSTORE_BASE64 RELEASE_STORE_PASSWORD RELEASE_KEY_ALIAS RELEASE_KEY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error title=Missing signing secret::Set $name in the release environment in this repository."
+              exit 1
+            fi
+          done
+
+      - name: Check out tagged sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Validate Gradle Wrapper
         uses: gradle/actions/wrapper-validation@90ddb51e90a5fd9ba75f40cf85156b7b41bf76a3 # v6
@@ -47,33 +95,22 @@ jobs:
       - name: Install Android build dependencies
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
-      - name: Verify tag matches app version
-        run: |
-          version_name="$(tools/read_version_name.sh)"
-          test -n "$version_name"
-          test "$GITHUB_REF_NAME" = "v$version_name"
-
       - name: Test and lint release sources
         run: ./gradlew testDebugUnitTest lintRelease --stacktrace
 
-      - name: Restore release keystore
+      - name: Restore and validate release keystore
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           RELEASE_STORE_FILE: ${{ runner.temp }}/day-meter-release.jks
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
-          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
-          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$RELEASE_STORE_PASSWORD" ] || [ -z "$RELEASE_KEY_ALIAS" ] || [ -z "$RELEASE_KEY_PASSWORD" ]; then
-            echo "::error title=Missing signing secret::Configure all four release-signing secrets before creating a release."
-            exit 1
-          fi
           umask 077
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RELEASE_STORE_FILE"
           test -s "$RELEASE_STORE_FILE"
           keytool -list -keystore "$RELEASE_STORE_FILE" -storepass "$RELEASE_STORE_PASSWORD" -alias "$RELEASE_KEY_ALIAS" >/dev/null
 
-      - name: Build signed release APK and App Bundle
+      - name: Build signed APK and Android App Bundle
         env:
           RELEASE_STORE_FILE: ${{ runner.temp }}/day-meter-release.jks
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
@@ -85,12 +122,12 @@ jobs:
         if: always()
         run: rm -f "${{ runner.temp }}/day-meter-release.jks"
 
-      - name: Prepare release files and checksums
+      - name: Prepare distribution with portable checksums
         run: |
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk "dist/day-meter-${GITHUB_REF_NAME}.apk"
           cp app/build/outputs/bundle/release/app-release.aab "dist/day-meter-${GITHUB_REF_NAME}.aab"
-          sha256sum --binary dist/day-meter-* > "dist/day-meter-${GITHUB_REF_NAME}-SHA256SUMS.txt"
+          (cd dist && sha256sum --binary "day-meter-${GITHUB_REF_NAME}.apk" "day-meter-${GITHUB_REF_NAME}.aab" > "day-meter-${GITHUB_REF_NAME}-SHA256SUMS.txt")
 
       - name: Attest release artifacts
         uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4
@@ -100,11 +137,7 @@ jobs:
             dist/*.aab
             dist/*-SHA256SUMS.txt
 
-      - name: Publish GitHub release
+      - name: Publish or repair the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --verify-tag \
-            --title "Day Meter ${GITHUB_REF_NAME#v}" \
-            --generate-notes
+        run: bash tools/publish_release.sh "$GITHUB_REF_NAME"
