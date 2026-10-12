@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Only a version that is actually built into the APK may become a release.
+# Public GitHub release versions may be vMAJOR.MINOR or vMAJOR.MINOR.PATCH.
+# Android versionName is set from the tag at build time (separately from
+# the monotonic numeric Android versionCode).
 tag="${1:-}"
-if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-  echo "::error title=Invalid release tag::Expected vMAJOR.MINOR.PATCH (for example v1.0.36), got '$tag'."
+if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))?$ ]]; then
+  echo "::error title=Invalid release tag::Expected vMAJOR.MINOR or vMAJOR.MINOR.PATCH (for example v1.1), got '$tag'." >&2
   exit 1
 fi
 
-version_name="$(bash tools/read_version_name.sh)"
-if [[ "$tag" != "v$version_name" ]]; then
-  echo "::error title=Tag/app version mismatch::Tag '$tag' does not match app/build.gradle versionName '$version_name'. Merge an updated versionName/versionCode to main first, then create tag 'v$version_name' on that commit. Never rename or move a published tag."
-  exit 1
+# Optional second argument enforces the version embedded in the Android build.
+# Only use this after the tagged build sources have been prepared for release.
+if [[ -n "${2:-}" ]]; then
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  version_name="$(bash "$script_dir/read_version_name.sh" "$2")"
+  if [[ "$tag" != "v$version_name" ]]; then
+    echo "::error title=Tag/app version mismatch::Tag '$tag' does not match $2 versionName '$version_name'." >&2
+    exit 1
+  fi
 fi
 
-echo "Release tag $tag matches Android versionName $version_name."
+echo "Validated release tag $tag."
