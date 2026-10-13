@@ -32,12 +32,15 @@ git log --oneline main..upstream/main
 
 ## Release and package identity
 
-- This fork has its **own** GitHub Actions release workflow. It needs a `release` environment and the `ANDROID_KEYSTORE_BASE64`, `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_ALIAS`, and `RELEASE_KEY_PASSWORD` secrets configured **in this repository** before any signed release.
-- Only push a `v<versionName>` tag when the tested app version and signing setup are ready. See the main README for details.
-- Check the release artifacts with `gh attestation verify <apk-file> --repo 0cwa/day-meter`.
-- The current Android application ID remains `com.example.dayprogress`, matching the original. This preserves the expected package identity for existing users but does **not** guarantee update compatibility if the signing certificate differs. Android apps with the same ID cannot be installed side-by-side for a given user.
-- Do not change the application ID, signing certificate, or persistent preference/storage schema casually: these affect app upgrades and user data. If we want a distinct installable product, first decide on a new application ID and a data migration/backup approach.
-- Retain upstream attribution and comply with the existing AGPL-3.0 license when distributing binaries or modified source.
+- This fork has its **own** guarded GitHub Actions release pipeline. Configure the `release` environment and its `ANDROID_KEYSTORE_BASE64`, `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_ALIAS`, and `RELEASE_KEY_PASSWORD` secrets **in this repository**. Never ship an unsigned fallback.
+- Tags like **`v1.1` and `v1.1.0` are both valid**. The release workflow builds the commit identified by the existing tag, deriving the packaged APK/AAB `versionName` from that tag. Android `versionCode` is a separate, monotonically increasing integer recorded in the tagged source; increase it for subsequent installed updates.
+- **Repair the existing empty v1.1 release instead of replacing its tag**: once the pipeline is merged to `main`, run `gh workflow run release.yml --ref main -f tag=v1.1 --repo 0cwa/day-meter`. This uses the updated pipeline from `main` while checking out the exact existing `v1.1` source commit. Its release build adjusts only `versionName` in a temporary build checkout, producing version `1.1` without moving the tag.
+- Signed APK/AAB builds must pass tests, lint, version checks and checksums; GitHub attestations and asset digest verification happen before publishing a new release. Existing releases can be safely repaired without overwriting conflicting files. The release-health monitor reports failed/incomplete releases in Actions and can open an incident issue when Issues are enabled (currently disabled).
+- Protect `main` with required CI/reviews and protect `v*` tags with a no-rewrites ruleset. If restricting the `release` environment, explicitly permit reviewed manual dispatches from `main` for recovery, as well as tag-triggered releases.
+- Verify `gh attestation verify day-meter-v1.1.apk --repo 0cwa/day-meter` and the published SHA-256 checksum file. See the main README for the complete runbook.
+- The Android application ID remains `com.example.dayprogress`, matching the original. This preserves the package identity for existing users but does **not** guarantee update compatibility if signing certificates differ. Android apps with the same ID cannot be installed side-by-side for a given user.
+- Do not change application ID, signing certificate, or persistent storage schema casually: these affect app upgrades and user data. If a separate installable product is needed, decide on a new application ID and migration/backup strategy first.
+- Retain upstream attribution and comply with AGPL-3.0 when distributing binaries or modified source.
 
 ## Next engineering checks
 

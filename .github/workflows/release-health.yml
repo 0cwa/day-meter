@@ -1,0 +1,103 @@
+name: Release health
+
+on:
+  workflow_run:
+    workflows: ["Release Android app"]
+    types: [completed]
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+# Avoid simultaneous scheduled and failed-run monitors filing duplicate alerts.
+concurrency:
+  group: day-meter-release-health
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  monitor:
+    name: Detect failed or incomplete releases
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out monitor scripts and version tags from main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve latest release tag merged into main
+        run: |
+          # Imported upstream version tags are historical. Only the latest
+          # reachable valid tag is expected to have a published GitHub Release.
+          expected_tag="$(git tag --merged HEAD --list 'v*' --sort=-version:refname | grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))?$' | head -n 1 || true)"
+          if [[ -n "$expected_tag" ]]; then
+            echo "RELEASE_EXPECTED_TAG=$expected_tag" >> "$GITHUB_ENV"
+            echo "Expecting release for latest tagged main history: $expected_tag"
+          fi
+
+      - name: Check publishing result and release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_RESULT: ${{ github.event.workflow_run.conclusion || '' }}
+          RELEASE_RUN_URL: ${{ github.event.workflow_run.html_url || '' }}
+        run: |
+          if [[ -n "$RELEASE_RESULT" && "$RELEASE_RESULT" != "success" ]]; then
+            echo "::error title=Release workflow failed::Failed or cancelled publish: $RELEASE_RUN_URL"
+            exit 1
+          fi
+          bash tools/check_release_health.sh
+
+      - name: Record actionable failure in the Actions run summary
+        if: failure()
+        env:
+          RELEASE_RUN_URL: ${{ github.event.workflow_run.html_url || '' }}
+        run: |
+          {
+            echo "## Release pipeline needs attention"
+            echo
+            echo "A release run failed or published assets are incomplete."
+            echo
+            echo "- [Release workflow](https://github.com/$GITHUB_REPOSITORY/actions/workflows/release.yml)"
+            echo "- [Published releases](https://github.com/$GITHUB_REPOSITORY/releases)"
+            if [[ -n "$RELEASE_RUN_URL" ]]; then
+              echo "- [Failed release run]($RELEASE_RUN_URL)"
+            fi
+            echo
+            echo "Check signing secrets, version metadata and asset digests. Retry the existing v1.1 release from main with tag=v1.1."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: File an alert issue when GitHub Issues are enabled
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_RUN_URL: ${{ github.event.workflow_run.html_url || '' }}
+          MONITOR_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # This fork currently disables Issues. Failure remains visible in
+          # Actions even if the issue-creation feature is not available.
+          if [[ "$(gh api "repos/$GITHUB_REPOSITORY" --jq '.has_issues')" != "true" ]]; then
+            echo "::warning title=GitHub Issues disabled::Enable Issues in repository settings for automatic incident tickets. Release health is still a failed Actions run."
+            exit 0
+          fi
+          title="Release pipeline alert: failed or incomplete release"
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title \
+            --jq '.[] | select(.title == "Release pipeline alert: failed or incomplete release") | .number' | head -n 1)"
+          if [[ -n "$existing" ]]; then
+            echo "Release alert issue #$existing is already open."
+            exit 0
+          fi
+          {
+            echo "The release monitor found a failed workflow or a GitHub Release missing signed APK, AAB, or checksums."
+            echo
+            echo "- Release runs: https://github.com/$GITHUB_REPOSITORY/actions/workflows/release.yml"
+            echo "- Published releases: https://github.com/$GITHUB_REPOSITORY/releases"
+            echo "- Monitoring run: $MONITOR_RUN_URL"
+            if [[ -n "$RELEASE_RUN_URL" ]]; then
+              echo "- Failed release run: $RELEASE_RUN_URL"
+            fi
+            echo
+            echo "Tag v1.1 is a valid release version. Check signing secrets and asset digests, then dispatch release.yml from main with tag=v1.1 to repair. Never overwrite conflicting release assets or move a published tag."
+          } > release-alert.md
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file release-alert.md
