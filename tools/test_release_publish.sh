@@ -19,7 +19,11 @@ case "$1:$2" in
   release:view)
     [[ -s "$GH_MOCK_STATE" ]] || exit 1
     if [[ " $* " == *" --jq "* ]]; then
-      jq -r '.draft' "$GH_MOCK_STATE"
+      case "${@: -1}" in
+        .apiUrl) printf '%s\n' 'repos/0cwa/day-meter/releases/123' ;;
+        .isDraft) jq -r '.draft' "$GH_MOCK_STATE" ;;
+        *) exit 2 ;;
+      esac
     else
       jq '{isDraft:.draft}' "$GH_MOCK_STATE"
     fi
@@ -44,6 +48,12 @@ case "$1:$2" in
     mv "$GH_MOCK_STATE.next" "$GH_MOCK_STATE"
     ;;
   api:repos/*)
+    # GitHub's tag endpoint cannot resolve a draft; require its stable ID.
+    if [[ "$2" == */releases/tags/* ]]; then
+      echo "gh: Not Found (HTTP 404)" >&2
+      exit 1
+    fi
+    [[ "$2" == repos/0cwa/day-meter/releases/123 ]] || exit 2
     [[ "$3" == --jq && "$4" == .assets ]] || exit 2
     jq '.assets' "$GH_MOCK_STATE"
     ;;

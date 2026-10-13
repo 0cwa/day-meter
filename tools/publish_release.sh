@@ -30,7 +30,10 @@ else
     --title "Day Meter ${tag#v}" --generate-notes
 fi
 
-assets="$(gh api "repos/$repo/releases/tags/$tag" --jq '.assets')"
+# Drafts are absent from the tag endpoint. Resolve their stable API URL through
+# the CLI, which can locate both draft and published releases by tag.
+release_api_url="$(gh release view "$tag" --repo "$repo" --json apiUrl --jq '.apiUrl')"
+assets="$(gh api "$release_api_url" --jq '.assets')"
 
 # Never clobber an asset: compare the GitHub-computed digest before uploading.
 for name in "${names[@]}"; do
@@ -57,7 +60,7 @@ for name in "${names[@]}"; do
 done
 
 # GitHub supplies an immutable SHA-256 digest calculated from uploaded bytes.
-assets="$(gh api "repos/$repo/releases/tags/$tag" --jq '.assets')"
+assets="$(gh api "$release_api_url" --jq '.assets')"
 if [[ "$(jq 'length' <<<"$assets")" -ne "${#names[@]}" ]]; then
   echo "::error::Expected exactly ${#names[@]} release files on $tag."
   exit 1
