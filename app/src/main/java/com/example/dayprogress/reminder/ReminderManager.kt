@@ -113,14 +113,14 @@ object CheckpointSnooze {
         val now = System.currentTimeMillis()
         if (deliveryToken < 0L || !DayIdFormatter.isValid(occurrenceDayId)) return null
         val store = CheckpointStore(context)
-        val checkpoint = store.getCheckpoints().find { it.id == checkpointId && it.enabled } ?: return null
+        val engine = CheckpointEngine(context)
+        val checkpoint = store.getCheckpoints().find { it.id == checkpointId && engine.isAvailable(it) } ?: return null
         val state = store.getState(checkpointId, occurrenceDayId) ?: return null
         if (state.status != CheckpointStatus.NOTIFIED || state.notifiedAtMillis != deliveryToken) return null
         // Independent snoozes may legitimately re-notify after midnight under their
         // original occurrence date. A current delivery claim remains their authority.
         if (checkpoint.predecessorId != null) {
             if (occurrenceDayId != DayIdFormatter.format(now)) return null
-            val engine = CheckpointEngine(context)
             val occurrence = engine.getCurrentOccurrence(checkpoint, now) ?: return null
             if (occurrence.occurrenceDayId != occurrenceDayId || occurrence.dueAtMillis > now ||
                 engine.isBlocked(checkpoint, occurrenceDayId, now)) return null
@@ -182,7 +182,7 @@ class CheckpointActionReceiver : BroadcastReceiver() {
         }
         val store = CheckpointStore(context)
         val checkpoint = store.getCheckpoints().find { it.id == checkpointId } ?: return false
-        if (!checkpoint.enabled) return false
+        if (!CheckpointEngine(context).isAvailable(checkpoint)) return false
         if (checkpoint.predecessorId != null && occurrenceDayId != com.example.dayprogress.data.DayIdFormatter.format(System.currentTimeMillis())) return false
         if (intent.action in setOf(ACTION_DONE, ACTION_SNOOZE) && CheckpointEngine(context).isBlocked(checkpoint, occurrenceDayId)) return false
         val currentState = store.getState(checkpointId, occurrenceDayId) ?: return false
@@ -237,8 +237,9 @@ private object ReminderCoordinator {
         }
 
         val store = CheckpointStore(context)
-        val result = CheckpointEngine(context).getDueCheckpoints()
-        val enabledCheckpoints = store.getCheckpoints().filter(Checkpoint::enabled).associateBy(Checkpoint::id)
+        val engine = CheckpointEngine(context)
+        val result = engine.getDueCheckpoints()
+        val enabledCheckpoints = store.getCheckpoints().filter(engine::isAvailable).associateBy(Checkpoint::id)
         store.putStates(result.missed.map { occurrence ->
             CheckpointState(
                 checkpointId = occurrence.checkpoint.id,
@@ -335,8 +336,9 @@ object ReminderNotifier {
     fun notificationsReady(context: Context): Boolean {
         if (!notificationsAllowed(context)) return false
         createChannels(context)
+        val engine = CheckpointEngine(context)
         return CheckpointStore(context).getCheckpoints()
-            .filter { it.enabled }
+            .filter(engine::isAvailable)
             .all { channelAllowed(context, it.notificationMode) }
     }
 
@@ -351,7 +353,7 @@ object ReminderNotifier {
         val store = CheckpointStore(context)
         val engine = CheckpointEngine(context)
         val now = System.currentTimeMillis()
-        val enabled = store.getCheckpoints().filter(Checkpoint::enabled).associateBy(Checkpoint::id)
+        val enabled = store.getCheckpoints().filter(engine::isAvailable).associateBy(Checkpoint::id)
         val allowed = notificationsAllowed(context)
         store.getStates().values.filter { it.status == CheckpointStatus.NOTIFIED }.forEach { state ->
             val checkpoint = enabled[state.checkpointId]
@@ -387,6 +389,7 @@ object ReminderNotifier {
     }
 
     fun show(context: Context, occurrence: CheckpointOccurrence, deliveryToken: Long): Boolean {
+        if (!CheckpointEngine(context).isAvailable(occurrence.checkpoint)) return false
         if (!notificationsAllowed(context)) return false
         createChannels(context)
         if (!channelAllowed(context, occurrence.checkpoint.notificationMode)) return false

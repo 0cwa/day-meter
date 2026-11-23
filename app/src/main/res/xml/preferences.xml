@@ -5,6 +5,12 @@
     <PreferenceCategory
         app:key="day_window_category"
         app:title="@string/settings_day_window">
+        <SwitchPreferenceCompat
+            app:key="phone_rest_enabled"
+            app:defaultValue="false"
+            app:title="@string/phone_rest_mode_title"
+            app:summary="@string/phone_rest_mode_summary" />
+
         <Preference
             app:key="ignore_before"
             app:title="@string/label_ignore_before" />
@@ -12,6 +18,52 @@
         <Preference
             app:key="day_end"
             app:title="@string/label_day_end" />
+
+        <Preference
+            app:key="phone_rest_explanation"
+            app:title="@string/phone_rest_explanation_title"
+            app:summary="@string/phone_rest_explanation"
+            app:selectable="false" />
+
+        <androidx.preference.SeekBarPreference
+            app:key="minimum_rest_minutes"
+            app:defaultValue="180"
+            app:min="30"
+            android:max="720"
+            app:seekBarIncrement="30"
+            app:title="@string/phone_rest_minimum_rest_title" />
+
+        <androidx.preference.SeekBarPreference
+            app:key="minimum_awake_minutes"
+            app:defaultValue="480"
+            app:min="0"
+            android:max="2160"
+            app:seekBarIncrement="30"
+            app:title="@string/phone_rest_minimum_awake_title" />
+
+        <SwitchPreferenceCompat
+            app:key="protect_wake_hours"
+            app:defaultValue="false"
+            app:title="@string/phone_rest_protect_title"
+            app:summary="@string/phone_rest_protect_summary" />
+
+        <Preference
+            app:key="protected_wake_start"
+            app:title="@string/phone_rest_protected_start_title" />
+
+        <Preference
+            app:key="protected_wake_end"
+            app:title="@string/phone_rest_protected_end_title" />
+
+        <Preference
+            app:key="phone_rest_history"
+            app:title="@string/phone_rest_history_title"
+            app:summary="@string/phone_rest_history_empty" />
+
+        <Preference
+            app:key="phone_rest_discard_latest"
+            app:title="@string/phone_rest_discard_title"
+            app:summary="@string/phone_rest_discard_summary" />
     </PreferenceCategory>
 
     <PreferenceCategory

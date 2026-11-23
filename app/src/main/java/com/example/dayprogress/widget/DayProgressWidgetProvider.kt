@@ -66,7 +66,8 @@ class DayProgressWidgetProvider : AppWidgetProvider() {
 
     override fun onDisabled(context: Context) {
         super.onDisabled(context)
-        if (!AlarmScheduler.hasWidgets(context)) AlarmScheduler.cancelWidgetUpdates(context)
+        // Phone-rest history remains useful in settings after the last widget is removed.
+        AlarmScheduler.scheduleWidgetUpdates(context)
     }
 
     companion object {

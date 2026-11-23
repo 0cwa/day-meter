@@ -40,11 +40,13 @@ import com.example.dayprogress.data.CheckpointNotificationMode
 import com.example.dayprogress.data.CheckpointStore
 import com.example.dayprogress.data.CheckpointTriggerType
 import com.example.dayprogress.data.DayRepository
+import com.example.dayprogress.data.PhoneRestAnalyzer
 import com.example.dayprogress.data.UsageDetector
 import com.example.dayprogress.reminder.ReminderNotifier
 import com.example.dayprogress.reminder.ReminderScheduler
 import com.example.dayprogress.reminder.ReminderTransitions
 import com.example.dayprogress.widget.DayProgressWidgetProvider
+import com.example.dayprogress.widget.WidgetDisplayFormatter
 import com.example.dayprogress.worker.AlarmScheduler
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.skydoves.colorpickerview.ColorPickerDialog
@@ -173,6 +175,8 @@ class SettingsFragment : PreferenceFragmentCompat() {
             true
         }
 
+        bindPhoneRestPreferences()
+
         // Usage Threshold
         findPreference<SeekBarPreference>(AppPreferences.KEY_USAGE_THRESHOLD)?.apply {
             summary = resources.getQuantityString(R.plurals.usage_threshold_summary, value, value)
@@ -180,6 +184,7 @@ class SettingsFragment : PreferenceFragmentCompat() {
                 val threshold = newValue as Int
                 summary = resources.getQuantityString(R.plurals.usage_threshold_summary, threshold, threshold)
                 prefs.usageThreshold = threshold
+                if (prefs.phoneRestEnabled) repository.resetPhoneRestTracking()
                 updateEverything(recomputeReminders = true)
                 true
             }
@@ -672,6 +677,9 @@ class SettingsFragment : PreferenceFragmentCompat() {
     }
 
     private fun checkpointTodaySummary(checkpoint: Checkpoint): String {
+        if (prefs.phoneRestEnabled && checkpoint.triggerType == CheckpointTriggerType.PERCENT) {
+            return getString(R.string.phone_rest_checkpoint_paused)
+        }
         val engine = CheckpointEngine(requireContext())
         val occurrence = engine.getCurrentOccurrence(checkpoint) ?: return getString(
             if (checkpoint.triggerType == CheckpointTriggerType.PERCENT && repository.getEffectiveStartTime() == -1L &&
@@ -798,11 +806,18 @@ class SettingsFragment : PreferenceFragmentCompat() {
     fun refreshPermissionState() {
         if (!isAdded || !::prefs.isInitialized) return
         findPreference<Preference>("usage_access_status")?.summary = getString(
-            if (UsageDetector.hasUsageStatsPermission(requireContext())) R.string.usage_access_granted else R.string.usage_access_not_granted
+            when {
+                UsageDetector.hasUsageStatsPermission(requireContext()) && Build.VERSION.SDK_INT < Build.VERSION_CODES.P ->
+                    R.string.usage_access_granted
+                UsageDetector.hasUsageStatsPermission(requireContext()) -> R.string.phone_rest_usage_access_granted
+                prefs.phoneRestEnabled -> R.string.phone_rest_usage_access_needed
+                else -> R.string.usage_access_not_granted
+            }
         )
         findPreference<Preference>("notification_status")?.summary = getString(
             if (ReminderNotifier.notificationsReady(requireContext())) R.string.notification_status_ready else R.string.notification_status_blocked
         )
+        refreshPhoneRestSettings()
         refreshStartModeState()
         rebuildCheckpointPreferences()
     }
@@ -817,6 +832,15 @@ class SettingsFragment : PreferenceFragmentCompat() {
     }
 
     private fun refreshStartModeState() {
+        if (prefs.phoneRestEnabled) {
+            val status = when {
+                Build.VERSION.SDK_INT < Build.VERSION_CODES.P -> getString(R.string.phone_rest_requires_android)
+                !UsageDetector.hasUsageStatsPermission(requireContext()) -> getString(R.string.phone_rest_usage_access_needed)
+                else -> WidgetDisplayFormatter.format(requireContext(), repository.getDayStatus(), null, emptyList(), true).primary
+            }
+            findPreference<Preference>("start_status")?.summary = status
+            return
+        }
         val hasManualStart = prefs.manualStartTime != -1L
         findPreference<Preference>("clear_manual_start")?.isEnabled = hasManualStart
         findPreference<SwitchPreferenceCompat>(AppPreferences.KEY_IS_MANUAL_LOCKED)?.apply {
@@ -860,6 +884,146 @@ class SettingsFragment : PreferenceFragmentCompat() {
         findPreference<SwitchPreferenceCompat>(AppPreferences.KEY_IS_MANUAL_LOCKED)?.isChecked = false
         findPreference<Preference>(AppPreferences.KEY_MANUAL_START_TIME)?.let(::updateManualStartSummary)
         if (update) updateEverything(recomputeReminders = true)
+    }
+
+    private fun bindPhoneRestPreferences() {
+        findPreference<SwitchPreferenceCompat>(AppPreferences.KEY_PHONE_REST_ENABLED)?.setOnPreferenceChangeListener { _, newValue ->
+            val enabled = newValue as Boolean
+            if (enabled && Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+                Toast.makeText(context, R.string.phone_rest_requires_android, Toast.LENGTH_LONG).show()
+                false
+            } else {
+                repository.setPhoneRestEnabled(enabled)
+                updateEverything(recomputeReminders = true)
+                true
+            }
+        }
+        findPreference<SeekBarPreference>(AppPreferences.KEY_MINIMUM_REST_MINUTES)?.setOnPreferenceChangeListener { _, newValue ->
+            prefs.minimumRestMinutes = newValue as Int
+            repository.resetPhoneRestTracking()
+            updateEverything(recomputeReminders = true)
+            true
+        }
+        findPreference<SeekBarPreference>(AppPreferences.KEY_MINIMUM_AWAKE_MINUTES)?.setOnPreferenceChangeListener { _, newValue ->
+            prefs.minimumAwakeMinutes = newValue as Int
+            repository.resetPhoneRestTracking()
+            updateEverything(recomputeReminders = true)
+            true
+        }
+        findPreference<SwitchPreferenceCompat>(AppPreferences.KEY_PROTECT_WAKE_HOURS)?.setOnPreferenceChangeListener { _, newValue ->
+            val enabled = newValue as Boolean
+            if (enabled && prefs.protectedWakeStartMinutes == prefs.protectedWakeEndMinutes) {
+                Toast.makeText(context, R.string.phone_rest_protected_invalid, Toast.LENGTH_LONG).show()
+                false
+            } else {
+                prefs.protectWakeHours = enabled
+                repository.resetPhoneRestTracking()
+                updateEverything(recomputeReminders = true)
+                true
+            }
+        }
+        setupTimePreference(AppPreferences.KEY_PROTECTED_WAKE_START, { prefs.protectedWakeStartMinutes }) { minutes ->
+            if (prefs.protectWakeHours && minutes == prefs.protectedWakeEndMinutes) {
+                Toast.makeText(context, R.string.phone_rest_protected_invalid, Toast.LENGTH_LONG).show()
+                false
+            } else {
+                prefs.protectedWakeStartMinutes = minutes
+                repository.resetPhoneRestTracking()
+                true
+            }
+        }
+        setupTimePreference(AppPreferences.KEY_PROTECTED_WAKE_END, { prefs.protectedWakeEndMinutes }) { minutes ->
+            if (prefs.protectWakeHours && minutes == prefs.protectedWakeStartMinutes) {
+                Toast.makeText(context, R.string.phone_rest_protected_invalid, Toast.LENGTH_LONG).show()
+                false
+            } else {
+                prefs.protectedWakeEndMinutes = minutes
+                repository.resetPhoneRestTracking()
+                true
+            }
+        }
+        findPreference<Preference>("phone_rest_history")?.setOnPreferenceClickListener {
+            val entries = phoneRestHistoryEntries()
+            val message = if (entries.isEmpty()) getString(R.string.phone_rest_history_empty) else
+                getString(R.string.phone_rest_history_help) + "\n\n" + entries.joinToString("\n\n")
+            MaterialAlertDialogBuilder(requireContext())
+                .setTitle(R.string.phone_rest_history_title)
+                .setMessage(message)
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
+            true
+        }
+        findPreference<Preference>("phone_rest_discard_latest")?.setOnPreferenceClickListener {
+            if (repository.discardLatestPhoneRest()) {
+                Toast.makeText(context, R.string.phone_rest_discarded, Toast.LENGTH_SHORT).show()
+                updateEverything(recomputeReminders = true)
+            }
+            true
+        }
+    }
+
+    private fun phoneRestHistoryEntries(snapshot: PhoneRestAnalyzer.Snapshot = repository.getPhoneRestSnapshot()): List<String> {
+        return PhoneRestHistoryFormatter.entries(requireContext(),
+            snapshot.history.map { it.endMillis } + listOfNotNull(snapshot.confirmedEndMillis.takeIf { it >= 0L }))
+    }
+
+    private fun refreshPhoneRestSettings() {
+        val enabled = prefs.phoneRestEnabled
+        findPreference<SwitchPreferenceCompat>(AppPreferences.KEY_PHONE_REST_ENABLED)?.apply {
+            isChecked = enabled
+            isEnabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P || enabled
+            summary = getString(if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P)
+                R.string.phone_rest_requires_android else R.string.phone_rest_mode_summary)
+        }
+        listOf(AppPreferences.KEY_IGNORE_BEFORE, AppPreferences.KEY_DAY_END,
+            "start_day_now", AppPreferences.KEY_MANUAL_START_TIME, AppPreferences.KEY_IS_MANUAL_LOCKED,
+            "clear_manual_start", "use_automatic_start").forEach { key ->
+            findPreference<Preference>(key)?.isVisible = !enabled
+        }
+        listOf("phone_rest_explanation", AppPreferences.KEY_MINIMUM_REST_MINUTES,
+            AppPreferences.KEY_MINIMUM_AWAKE_MINUTES, AppPreferences.KEY_PROTECT_WAKE_HOURS,
+            AppPreferences.KEY_PROTECTED_WAKE_START, AppPreferences.KEY_PROTECTED_WAKE_END,
+            "phone_rest_history", "phone_rest_discard_latest").forEach { key ->
+            findPreference<Preference>(key)?.isVisible = enabled
+        }
+        findPreference<SeekBarPreference>(AppPreferences.KEY_USAGE_THRESHOLD)?.apply {
+            title = getString(if (enabled) R.string.phone_rest_usage_threshold_title else R.string.label_usage_threshold)
+            summary = if (enabled) getString(R.string.phone_rest_usage_threshold_summary, prefs.usageThreshold) else
+                resources.getQuantityString(R.plurals.usage_threshold_summary, prefs.usageThreshold, prefs.usageThreshold)
+        }
+        if (!enabled) return
+        findPreference<SeekBarPreference>(AppPreferences.KEY_MINIMUM_REST_MINUTES)?.apply {
+            value = prefs.minimumRestMinutes
+            summary = getString(R.string.phone_rest_minimum_rest_summary,
+                WidgetDisplayFormatter.formatDuration(requireContext(), prefs.minimumRestMinutes * 60_000L))
+        }
+        findPreference<SeekBarPreference>(AppPreferences.KEY_MINIMUM_AWAKE_MINUTES)?.apply {
+            value = prefs.minimumAwakeMinutes
+            summary = getString(R.string.phone_rest_minimum_awake_summary,
+                WidgetDisplayFormatter.formatDuration(requireContext(), prefs.minimumAwakeMinutes * 60_000L))
+        }
+        findPreference<SwitchPreferenceCompat>(AppPreferences.KEY_PROTECT_WAKE_HOURS)?.isChecked = prefs.protectWakeHours
+        val noWakeRange = prefs.protectedWakeStartMinutes == prefs.protectedWakeEndMinutes
+        findPreference<Preference>(AppPreferences.KEY_PROTECTED_WAKE_START)?.summary =
+            if (noWakeRange) getString(R.string.phone_rest_protected_unset) else formatClockSummary(prefs.protectedWakeStartMinutes)
+        findPreference<Preference>(AppPreferences.KEY_PROTECTED_WAKE_END)?.summary =
+            if (noWakeRange) getString(R.string.phone_rest_protected_unset) else formatClockSummary(prefs.protectedWakeEndMinutes)
+        val nowMillis = System.currentTimeMillis()
+        val snapshot = repository.getPhoneRestSnapshot(nowMillis)
+        val entries = phoneRestHistoryEntries(snapshot)
+        findPreference<Preference>("phone_rest_history")?.summary = entries.firstOrNull() ?: getString(R.string.phone_rest_history_empty)
+        val status = repository.getDayStatus(nowMillis)
+        val pending = status.state == DayRepository.DayState.REST_PENDING
+        val latestEnd = snapshot.confirmedEndMillis.takeIf { it >= 0L }
+            ?: status.endTimeMillis.takeIf { pending }
+            ?: snapshot.history.lastOrNull()?.endMillis
+        findPreference<Preference>("phone_rest_discard_latest")?.apply {
+            isEnabled = latestEnd != null
+            summary = if (latestEnd == null) getString(R.string.phone_rest_discard_summary) else getString(
+                if (pending) R.string.phone_rest_discard_pending_summary else R.string.phone_rest_discard_confirmed_summary,
+                PhoneRestHistoryFormatter.formatDateTime(requireContext(), latestEnd)
+            )
+        }
     }
 
     private fun setupColorPreference(key: String, title: String, setter: (Int) -> Unit) {
@@ -950,6 +1114,8 @@ class SettingsFragment : PreferenceFragmentCompat() {
     }
 
     private fun resetToDefaults() {
+        repository.setPhoneRestEnabled(false)
+        repository.clearPhoneRestHistory()
         prefs.apply {
             widgetType = 2
             widgetFollowTheme = false
@@ -964,6 +1130,11 @@ class SettingsFragment : PreferenceFragmentCompat() {
             usageThreshold = 5
             ignoreBefore = 6 * 60
             dayEnd = 22 * 60
+            minimumRestMinutes = 180
+            minimumAwakeMinutes = 480
+            protectWakeHours = false
+            protectedWakeStartMinutes = 0
+            protectedWakeEndMinutes = 0
             fontFamily = "default"
             barSize = 1
             barStyle = 1

@@ -2,6 +2,7 @@ package com.example.dayprogress.data
 
 import android.content.Context
 import android.util.Log
+import com.example.dayprogress.reminder.ReminderNotifier
 import java.util.Calendar
 
 class DayRepository(private val context: Context) {
@@ -20,7 +21,10 @@ class DayRepository(private val context: Context) {
         STARTS_IN_FUTURE,
         ACTIVE,
         COMPLETE,
-        ENDED_WITHOUT_START
+        ENDED_WITHOUT_START,
+        REST_PENDING,
+        REST_CONFIRMED,
+        PHONE_REST_UNAVAILABLE
     }
 
     data class DayStatus(
@@ -28,12 +32,57 @@ class DayRepository(private val context: Context) {
         val progress: Int,
         val startTimeMillis: Long,
         val endTimeMillis: Long,
-        val timeRemainingMillis: Long
+        val timeRemainingMillis: Long,
+        val phoneRestMode: Boolean = false,
+        val referenceEndTimeMillis: Long = -1L,
+        val comparisonMillis: Long? = null,
+        val elapsedMillis: Long = 0L
     )
 
     private val prefs = AppPreferences(context)
+    private val phoneRestTracker = PhoneRestTracker(context)
+    private var phoneRestReadAt = -1L
+    private var phoneRestResult: PhoneRestTracker.Result? = null
 
     fun getPreferences() = prefs
+
+    fun setPhoneRestEnabled(enabled: Boolean, nowMillis: Long = System.currentTimeMillis()) {
+        phoneRestTracker.setEnabled(enabled, nowMillis)
+        invalidatePhoneRest()
+        // Existing percentage reminders cannot remain actionable against an unknown day length.
+        ReminderNotifier.refreshActiveReminders(context)
+    }
+
+    fun resetPhoneRestTracking(nowMillis: Long = System.currentTimeMillis()) {
+        phoneRestTracker.resetEvidence(nowMillis)
+        invalidatePhoneRest()
+    }
+
+    fun clearPhoneRestHistory(nowMillis: Long = System.currentTimeMillis()) {
+        phoneRestTracker.clear(nowMillis)
+        invalidatePhoneRest()
+    }
+
+    fun discardLatestPhoneRest(nowMillis: Long = System.currentTimeMillis()): Boolean {
+        getPhoneRestSnapshot(nowMillis)
+        return phoneRestTracker.discardLatestRest(nowMillis).also { invalidatePhoneRest() }
+    }
+
+    fun getPhoneRestSnapshot(nowMillis: Long = System.currentTimeMillis()): PhoneRestAnalyzer.Snapshot =
+        readPhoneRest(nowMillis).snapshot
+
+    private fun invalidatePhoneRest() {
+        phoneRestReadAt = -1L
+        phoneRestResult = null
+    }
+
+    private fun readPhoneRest(nowMillis: Long): PhoneRestTracker.Result {
+        if (phoneRestReadAt != nowMillis || phoneRestResult == null) {
+            phoneRestResult = phoneRestTracker.refresh(nowMillis)
+            phoneRestReadAt = nowMillis
+        }
+        return phoneRestResult!!
+    }
 
     fun migrateLegacyManualStart() {
         if (prefs.isManualLocked && prefs.manualStartTime >= 0L && prefs.manualStartMinutes == -1) {
@@ -42,6 +91,21 @@ class DayRepository(private val context: Context) {
     }
 
     fun getCurrentDayWindow(nowMillis: Long = System.currentTimeMillis()): DayWindow {
+        if (prefs.phoneRestEnabled) {
+            val snapshot = getPhoneRestSnapshot(nowMillis)
+            val start = snapshot.currentDayStartMillis.takeIf { it >= 0L } ?: nowMillis
+            val localDay = Calendar.getInstance().apply {
+                timeInMillis = start
+                set(Calendar.HOUR_OF_DAY, 0)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }.timeInMillis
+            // No fixed-clock end is substituted when there is no observed reference.
+            val end = snapshot.confirmedEndMillis.takeIf { it >= 0L } ?: phoneRestReference(snapshot)
+            return DayWindow(DayIdFormatter.format(start), localDay, start, end,
+                end >= 0L && DayIdFormatter.format(end) != DayIdFormatter.format(start))
+        }
         val calculated = DayWindowCalculator.calculate(
             nowMillis = nowMillis,
             ignoreBeforeMinutes = prefs.ignoreBefore,
@@ -62,10 +126,12 @@ class DayRepository(private val context: Context) {
         nowMillis: Long = System.currentTimeMillis(),
         allowFuture: Boolean = false
     ): Long? {
+        if (prefs.phoneRestEnabled) return null
         return resolveClockMinutes(getCurrentDayWindow(nowMillis), clockMinutes, nowMillis, allowFuture)
     }
 
     fun getEffectiveStartTime(nowMillis: Long = System.currentTimeMillis()): Long {
+        if (prefs.phoneRestEnabled) return getPhoneRestSnapshot(nowMillis).currentDayStartMillis
         val window = getCurrentDayWindow(nowMillis)
         val manualStart = getManualStartTime(window, nowMillis)
         if (manualStart != -1L) {
@@ -87,6 +153,7 @@ class DayRepository(private val context: Context) {
     }
 
     fun getCurrentDayEndTime(nowMillis: Long = System.currentTimeMillis()): Long {
+        if (prefs.phoneRestEnabled) return getPhoneRestSnapshot(nowMillis).confirmedEndMillis
         return getCurrentDayWindow(nowMillis).dayEndMillis
     }
 
@@ -100,6 +167,7 @@ class DayRepository(private val context: Context) {
     }
 
     fun getDayStatus(nowMillis: Long = System.currentTimeMillis()): DayStatus {
+        if (prefs.phoneRestEnabled) return phoneRestStatus(nowMillis)
         checkAndResetDay(nowMillis)
         val window = getCurrentDayWindow(nowMillis)
         val start = getEffectiveStartTime(nowMillis)
@@ -122,6 +190,10 @@ class DayRepository(private val context: Context) {
     }
 
     fun checkAndResetDay(nowMillis: Long = System.currentTimeMillis()) {
+        if (prefs.phoneRestEnabled) {
+            readPhoneRest(nowMillis)
+            return
+        }
         val window = getCurrentDayWindow(nowMillis)
 
         if (prefs.lastResetDate != window.logicalDayId) {
@@ -148,6 +220,12 @@ class DayRepository(private val context: Context) {
     }
 
     fun detectDayStartIfNeeded(nowMillis: Long = System.currentTimeMillis()): Boolean {
+        if (prefs.phoneRestEnabled) {
+            val previous = PhoneRestStore(context).read()?.snapshot
+            val current = getPhoneRestSnapshot(nowMillis)
+            return previous?.currentDayStartMillis != current.currentDayStartMillis ||
+                previous?.confirmedEndMillis != current.confirmedEndMillis
+        }
         return try {
             checkAndResetDay(nowMillis)
 
@@ -185,6 +263,7 @@ class DayRepository(private val context: Context) {
     }
 
     fun calculateProgress(nowMillis: Long = System.currentTimeMillis()): Int {
+        if (prefs.phoneRestEnabled) return phoneRestStatus(nowMillis).progress
         return try {
             checkAndResetDay(nowMillis)
 
@@ -211,6 +290,46 @@ class DayRepository(private val context: Context) {
             Log.e("DayRepository", "Error calculating progress", e)
             0
         }
+    }
+
+    private fun phoneRestReference(snapshot: PhoneRestAnalyzer.Snapshot): Long {
+        if (snapshot.currentDayStartMillis < 0L) return -1L
+        val previousEnd = snapshot.history.lastOrNull()?.endMillis ?: return -1L
+        return PhoneRestAnalyzer.referenceEndMillis(previousEnd, snapshot.currentDayStartMillis)
+    }
+
+    private fun phoneRestStatus(nowMillis: Long): DayStatus {
+        val result = readPhoneRest(nowMillis)
+        val snapshot = result.snapshot
+        val start = snapshot.currentDayStartMillis
+        val reference = phoneRestReference(snapshot)
+        val candidate = PhoneRestAnalyzer.candidateEndMillis(snapshot, nowMillis, phoneRestTracker.config())
+        val state = when {
+            !result.available -> DayState.PHONE_REST_UNAVAILABLE
+            start < 0L -> DayState.WAITING_FOR_START
+            snapshot.confirmedEndMillis >= 0L -> DayState.REST_CONFIRMED
+            candidate != null -> DayState.REST_PENDING
+            else -> DayState.ACTIVE
+        }
+        val end = snapshot.confirmedEndMillis.takeIf { it >= 0L } ?: candidate ?: reference
+        val elapsed = if (start >= 0L) ((candidate ?: nowMillis) - start).coerceAtLeast(0L) else 0L
+        val progress = when {
+            state == DayState.REST_CONFIRMED -> 100
+            state == DayState.PHONE_REST_UNAVAILABLE || start < 0L || reference <= start -> 0
+            // This is progress toward the previous end's clock time, never a fixed cutoff.
+            else -> (elapsed.toDouble() / (reference - start) * 100).toInt().coerceIn(0, 99)
+        }
+        return DayStatus(
+            state = state,
+            progress = progress,
+            startTimeMillis = start,
+            endTimeMillis = end,
+            timeRemainingMillis = if (reference >= 0L) (reference - nowMillis).coerceAtLeast(0L) else 0L,
+            phoneRestMode = true,
+            referenceEndTimeMillis = reference,
+            comparisonMillis = reference.takeIf { it >= 0L }?.let { (candidate ?: nowMillis) - it },
+            elapsedMillis = elapsed
+        )
     }
 
     private fun getManualStartTime(window: DayWindow, nowMillis: Long): Long {

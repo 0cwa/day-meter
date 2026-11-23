@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.SystemClock
 import android.util.Log
+import com.example.dayprogress.data.AppPreferences
 import com.example.dayprogress.data.CheckpointStatus
 import com.example.dayprogress.data.CheckpointStore
 import com.example.dayprogress.data.DayRepository
@@ -32,7 +33,8 @@ class BootReceiver : BroadcastReceiver() {
 
             val hasWidgets = AlarmScheduler.hasWidgets(appContext)
             val hasReminders = CheckpointStore(appContext).hasEnabledCheckpoints()
-            if (!hasWidgets && !hasReminders) return@runAsync
+            val tracksPhoneRest = AppPreferences(appContext).phoneRestEnabled
+            if (!hasWidgets && !hasReminders && !tracksPhoneRest) return@runAsync
 
             Log.d("BootReceiver", "Reconciling schedules after ${intent.action}")
             val wallClockChanged = intent.action in setOf(
@@ -51,6 +53,8 @@ class BootReceiver : BroadcastReceiver() {
             DayRepository(appContext).checkAndResetDay()
             if (hasWidgets) {
                 DayProgressWidgetProvider.updateAllWidgets(appContext)
+            }
+            if (hasWidgets || tracksPhoneRest) {
                 AlarmScheduler.scheduleWidgetUpdates(appContext)
             }
             if (hasReminders) {

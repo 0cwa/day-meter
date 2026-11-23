@@ -27,6 +27,12 @@ class AppPreferences(context: Context) {
         const val KEY_USAGE_THRESHOLD = "usage_threshold"
         const val KEY_IGNORE_BEFORE = "ignore_before"
         const val KEY_DAY_END = "day_end"
+        const val KEY_PHONE_REST_ENABLED = "phone_rest_enabled"
+        const val KEY_MINIMUM_REST_MINUTES = "minimum_rest_minutes"
+        const val KEY_MINIMUM_AWAKE_MINUTES = "minimum_awake_minutes"
+        const val KEY_PROTECT_WAKE_HOURS = "protect_wake_hours"
+        const val KEY_PROTECTED_WAKE_START = "protected_wake_start"
+        const val KEY_PROTECTED_WAKE_END = "protected_wake_end"
         const val KEY_DETECTED_START_TIME = "detected_start_time"
         const val KEY_MANUAL_START_TIME = "manual_start_time"
         const val KEY_MANUAL_START_MINUTES = "manual_start_minutes"
@@ -197,6 +203,30 @@ class AppPreferences(context: Context) {
     var dayEnd: Int
         get() = safeGetInt(KEY_DAY_END, 22 * 60, 0..1439)
         set(value) = prefs.edit { putInt(KEY_DAY_END, value) }
+
+    var phoneRestEnabled: Boolean
+        get() = safeGetBoolean(KEY_PHONE_REST_ENABLED, false)
+        set(value) = prefs.edit { putBoolean(KEY_PHONE_REST_ENABLED, value) }
+
+    var minimumRestMinutes: Int
+        get() = safeGetInt(KEY_MINIMUM_REST_MINUTES, 180, 30..720)
+        set(value) = prefs.edit { putInt(KEY_MINIMUM_REST_MINUTES, value) }
+
+    var minimumAwakeMinutes: Int
+        get() = safeGetInt(KEY_MINIMUM_AWAKE_MINUTES, 480, 0..2160)
+        set(value) = prefs.edit { putInt(KEY_MINIMUM_AWAKE_MINUTES, value) }
+
+    var protectWakeHours: Boolean
+        get() = safeGetBoolean(KEY_PROTECT_WAKE_HOURS, false)
+        set(value) = prefs.edit { putBoolean(KEY_PROTECT_WAKE_HOURS, value) }
+
+    var protectedWakeStartMinutes: Int
+        get() = safeGetInt(KEY_PROTECTED_WAKE_START, 0, 0..1439)
+        set(value) = prefs.edit { putInt(KEY_PROTECTED_WAKE_START, value) }
+
+    var protectedWakeEndMinutes: Int
+        get() = safeGetInt(KEY_PROTECTED_WAKE_END, 0, 0..1439)
+        set(value) = prefs.edit { putInt(KEY_PROTECTED_WAKE_END, value) }
 
     var detectedStartTime: Long
         get() = safeGetLong(KEY_DETECTED_START_TIME, -1L)

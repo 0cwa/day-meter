@@ -12,6 +12,79 @@ import android.util.Log
 class UsageDetector(private val context: Context) {
     private val excludedPackages: Set<String> by lazy { buildExcludedPackages() }
 
+    internal data class PhoneRestEventBatch(
+        val events: List<PhoneRestAnalyzer.Event>,
+        val screenInteractive: Boolean?,
+        val keyguardHidden: Boolean?
+    )
+
+    /**
+     * Device-level rest evidence, available since Android 9. A missing foreground
+     * app is not evidence of rest: only an observed lock/screen-off starts it.
+     * Launcher use counts here, unlike the fixed-mode day-start threshold.
+     * Null means unavailable data, rather than an empty (but successful) query.
+     */
+    @SuppressLint("InlinedApi", "NewApi")
+    internal fun readPhoneRestEvents(
+        fromMillis: Long,
+        untilMillis: Long,
+        initialScreenInteractive: Boolean? = null,
+        initialKeyguardHidden: Boolean? = null
+    ): PhoneRestEventBatch? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P || !hasUsageStatsPermission(context)) return null
+        return try {
+            val manager = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
+                ?: return null
+            val events = manager.queryEvents(fromMillis, untilMillis) ?: return null
+            val result = mutableListOf<PhoneRestAnalyzer.Event>()
+            var screenInteractive = initialScreenInteractive
+            var keyguardHidden = initialKeyguardHidden
+            val event = UsageEvents.Event()
+            while (events.hasNextEvent()) {
+                events.getNextEvent(event)
+                if (event.timeStamp < fromMillis || event.timeStamp >= untilMillis) continue
+                val type = when (event.eventType) {
+                    UsageEvents.Event.SCREEN_INTERACTIVE -> {
+                        screenInteractive = true
+                        // A notification lighting up the lock screen is not a wake.
+                        PhoneRestAnalyzer.EventType.USE.takeIf { keyguardHidden == true }
+                    }
+                    UsageEvents.Event.SCREEN_NON_INTERACTIVE -> {
+                        screenInteractive = false
+                        PhoneRestAnalyzer.EventType.IDLE
+                    }
+                    UsageEvents.Event.KEYGUARD_SHOWN -> {
+                        keyguardHidden = false
+                        PhoneRestAnalyzer.EventType.IDLE
+                    }
+                    UsageEvents.Event.KEYGUARD_HIDDEN -> {
+                        keyguardHidden = true
+                        screenInteractive = true
+                        PhoneRestAnalyzer.EventType.USE
+                    }
+                    UsageEvents.Event.ACTIVITY_RESUMED -> {
+                        if (event.packageName.isNullOrBlank() || event.packageName in SYSTEM_PACKAGES) continue
+                        // Alarms and calls may resume an activity without the phone being
+                        // unlocked. Persist these gates across event-query boundaries.
+                        PhoneRestAnalyzer.EventType.USE.takeIf { screenInteractive != false && keyguardHidden != false }
+                    }
+                    UsageEvents.Event.DEVICE_SHUTDOWN,
+                    UsageEvents.Event.DEVICE_STARTUP -> {
+                        screenInteractive = null
+                        keyguardHidden = null
+                        PhoneRestAnalyzer.EventType.UNKNOWN
+                    }
+                    else -> continue
+                }
+                if (type != null) result += PhoneRestAnalyzer.Event(event.timeStamp, type)
+            }
+            PhoneRestEventBatch(result, screenInteractive, keyguardHidden)
+        } catch (e: Exception) {
+            Log.w(TAG, "Phone-rest usage history is unavailable", e)
+            null
+        }
+    }
+
     fun findThresholdCrossingTime(
         logicalDayStartMillis: Long,
         ignoreBeforeMillis: Long,
@@ -118,6 +191,7 @@ class UsageDetector(private val context: Context) {
     companion object {
         private const val TAG = "UsageDetector"
         private const val MINUTE_MILLIS = 60_000L
+        private val SYSTEM_PACKAGES = setOf("android", "com.android.systemui")
 
         @Suppress("DEPRECATION")
         fun hasUsageStatsPermission(context: Context): Boolean {
