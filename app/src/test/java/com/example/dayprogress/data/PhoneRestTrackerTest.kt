@@ -142,6 +142,27 @@ class PhoneRestTrackerTest {
     }
 
     @Test
+    fun grantingUsageAccessAfterFirstOptInCanStillReconstructRecentRest() {
+        prefs.phoneRestEnabled = false
+        allowUsage(false)
+        val wake = at(4, 14)
+        val now = wake + 6 * minute
+        addEvent(dayStart, UsageEvents.Event.KEYGUARD_HIDDEN)
+        addEvent(at(4, 6), UsageEvents.Event.KEYGUARD_SHOWN)
+        addEvent(at(4, 6) + 1_000L, UsageEvents.Event.SCREEN_NON_INTERACTIVE)
+        addEvent(wake, UsageEvents.Event.SCREEN_INTERACTIVE)
+        addEvent(wake, UsageEvents.Event.KEYGUARD_HIDDEN)
+
+        tracker.setEnabled(true, now)
+        assertFalse(tracker.refresh(now, elapsedMillis = 0L).available)
+        allowUsage(true)
+        val result = PhoneRestTracker(context).refresh(now + minute, elapsedMillis = minute)
+        assertTrue(result.available)
+        assertEquals(wake, result.snapshot.currentDayStartMillis)
+        assertEquals(listOf(PhoneRestAnalyzer.RestPeriod(dayStart, at(4, 6, 5), wake)), result.snapshot.history)
+    }
+
+    @Test
     fun togglingTheModePreservesHistoryAndDropsUnfinishedEvidence() {
         val now = at(4, 10)
         store.write(PhoneRestStore.Record(PhoneRestAnalyzer.Snapshot(
@@ -191,6 +212,22 @@ class PhoneRestTrackerTest {
         assertEquals(-1L, after.currentDayStartMillis)
         assertEquals(-1L, after.idleSinceMillis)
         assertEquals(-1L, after.confirmedEndMillis)
+    }
+
+    @Test
+    fun anOlderQueuedRefreshCannotRewindNewerRestEvidence() {
+        val newest = at(4, 10)
+        val record = PhoneRestStore.Record(PhoneRestAnalyzer.Snapshot(
+            newest, dayStart, idleSinceMillis = at(4, 6), confirmedEndMillis = at(4, 6, 5), history = history
+        ), savedWallMillis = newest, savedElapsedMillis = hour)
+        store.write(record)
+
+        val olderSample = tracker.refresh(newest - 10L, elapsedMillis = hour - 10L)
+        assertEquals(record.snapshot, olderSample.snapshot)
+        assertEquals(record, store.read())
+        val delayedSample = tracker.refresh(newest - 10L, elapsedMillis = hour + 10L)
+        assertEquals(record.snapshot, delayedSample.snapshot)
+        assertEquals(record, store.read())
     }
 
     @Test

@@ -18,7 +18,8 @@ internal class PhoneRestStore(context: Context) {
         val savedElapsedMillis: Long = -1L,
         val available: Boolean = true,
         val screenInteractive: Boolean? = null,
-        val keyguardHidden: Boolean? = null
+        val keyguardHidden: Boolean? = null,
+        val initialReplayPending: Boolean = false
     )
 
     fun read(): Record? = try {
@@ -52,7 +53,8 @@ internal class PhoneRestStore(context: Context) {
                 snapshot.currentDayStartMillis >= 0L && snapshot.confirmedEndMillis > snapshot.currentDayStartMillis)
             Record(snapshot, json.optLong("wall", -1L), json.optLong("elapsed", -1L), json.optBoolean("available", true),
                 if (json.isNull("interactive")) null else json.getBoolean("interactive"),
-                if (json.isNull("unlocked")) null else json.getBoolean("unlocked"))
+                if (json.isNull("unlocked")) null else json.getBoolean("unlocked"),
+                json.optBoolean("initialReplayPending", false))
         }
     } catch (e: Exception) {
         Log.w("PhoneRestStore", "Discarding unreadable phone-rest state", e)
@@ -79,6 +81,7 @@ internal class PhoneRestStore(context: Context) {
             .put("available", record.available)
             .put("interactive", record.screenInteractive ?: JSONObject.NULL)
             .put("unlocked", record.keyguardHidden ?: JSONObject.NULL)
+            .put("initialReplayPending", record.initialReplayPending)
         preferences.edit().putString(KEY, json.toString()).apply()
     }
 
@@ -115,17 +118,34 @@ internal class PhoneRestTracker(private val context: Context) {
         )
         var screenInteractive = stored?.screenInteractive
         var keyguardHidden = stored?.keyguardHidden
+        val initialReplayPending = stored?.initialReplayPending ?: true
         if (!prefs.phoneRestEnabled) return@synchronized Result(snapshot, false)
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P || !UsageDetector.hasUsageStatsPermission(context)) {
             snapshot = withoutEvidence(snapshot, nowMillis)
-            store.write(PhoneRestStore.Record(snapshot, nowMillis, elapsedMillis, false))
+            store.write(PhoneRestStore.Record(snapshot, nowMillis, elapsedMillis, false,
+                initialReplayPending = initialReplayPending))
             return@synchronized Result(snapshot, false)
+        }
+
+        if (initialReplayPending) {
+            // The usual first-time flow grants Usage Access after enabling this option.
+            // Keep its initial lookback available until that first authorized query.
+            snapshot = PhoneRestAnalyzer.Snapshot(cursorMillis = (nowMillis - MAX_REPLAY_MILLIS).coerceAtLeast(0L),
+                history = snapshot.history)
+            screenInteractive = null
+            keyguardHidden = null
         }
 
         // Wall-clock edits and reboots must not turn an unobserved interval into sleep.
         // A timezone/DST change does not change epoch time and needs no reset here.
-        val clockDiscontinuity = stored != null && stored.savedWallMillis >= 0L && stored.savedElapsedMillis >= 0L &&
+        val clockDiscontinuity = !initialReplayPending && stored != null && stored.savedWallMillis >= 0L && stored.savedElapsedMillis >= 0L &&
             abs((nowMillis - stored.savedWallMillis) - (elapsedMillis - stored.savedElapsedMillis)) > CLOCK_TOLERANCE_MILLIS
+        if (nowMillis < snapshot.cursorMillis && stored != null &&
+            stored.savedWallMillis >= 0L && stored.savedElapsedMillis >= 0L && !clockDiscontinuity) {
+            // UI and worker callers sample time before taking this lock. An older queued
+            // refresh must not rewind newer evidence or masquerade as a wall-clock edit.
+            return@synchronized Result(snapshot, stored.available)
+        }
         if (nowMillis < snapshot.cursorMillis || clockDiscontinuity) {
             snapshot = PhoneRestAnalyzer.Snapshot(cursorMillis = nowMillis, history = snapshot.history)
             screenInteractive = null
@@ -148,7 +168,8 @@ internal class PhoneRestTracker(private val context: Context) {
         val batch = UsageDetector(context).readPhoneRestEvents(snapshot.cursorMillis, nowMillis, screenInteractive, keyguardHidden)
         if (batch == null) {
             snapshot = withoutEvidence(snapshot, nowMillis)
-            store.write(PhoneRestStore.Record(snapshot, nowMillis, elapsedMillis, false))
+            store.write(PhoneRestStore.Record(snapshot, nowMillis, elapsedMillis, false,
+                initialReplayPending = initialReplayPending))
             return@synchronized Result(snapshot, false)
         }
         val updated = PhoneRestAnalyzer.advance(snapshot, batch.events, nowMillis, config())
@@ -164,15 +185,17 @@ internal class PhoneRestTracker(private val context: Context) {
         // The first opt-in can reconstruct recent observed activity; subsequent opt-ins start now.
         val cursor = if (enabled && previous == null) (nowMillis - MAX_REPLAY_MILLIS).coerceAtLeast(0L) else nowMillis
         val snapshot = PhoneRestAnalyzer.Snapshot(cursorMillis = cursor, history = previous?.history.orEmpty())
-        store.write(PhoneRestStore.Record(snapshot))
+        store.write(PhoneRestStore.Record(snapshot, initialReplayPending = enabled && previous == null))
     }
 
     fun resetEvidence(nowMillis: Long, resetDay: Boolean = false) = synchronized(lock) {
-        val snapshot = store.read()?.snapshot ?: PhoneRestAnalyzer.Snapshot()
+        val stored = store.read()
+        val snapshot = stored?.snapshot ?: PhoneRestAnalyzer.Snapshot()
         val updated = withoutEvidence(snapshot, nowMillis).let {
             if (resetDay) it.copy(currentDayStartMillis = -1L) else it
         }
-        store.write(PhoneRestStore.Record(updated, nowMillis, SystemClock.elapsedRealtime()))
+        store.write(PhoneRestStore.Record(updated, nowMillis, SystemClock.elapsedRealtime(),
+            initialReplayPending = stored?.initialReplayPending == true))
     }
 
     fun discardLatestRest(nowMillis: Long): Boolean = synchronized(lock) {

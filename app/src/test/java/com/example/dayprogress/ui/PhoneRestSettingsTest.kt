@@ -11,6 +11,7 @@ import com.example.dayprogress.data.AppPreferences
 import com.example.dayprogress.data.DayRepository
 import com.example.dayprogress.data.PhoneRestAnalyzer
 import com.example.dayprogress.data.PhoneRestStore
+import com.example.dayprogress.worker.runInBackground
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -22,7 +23,11 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.android.controller.ActivityController
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.ConscryptMode
+import org.robolectric.shadows.ShadowSystemClock
 import org.robolectric.shadows.ShadowToast
+import java.time.Duration
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -35,6 +40,8 @@ class PhoneRestSettingsTest {
 
     @Before
     fun setUp() {
+        // Keep the twelve-hour seeded history valid even with an epoch-based test clock.
+        ShadowSystemClock.advanceBy(Duration.ofDays(2))
         context = ApplicationProvider.getApplicationContext()
         context.getSharedPreferences(AppPreferences.FILE_NAME, Context.MODE_PRIVATE).edit().clear().commit()
         prefs = AppPreferences(context)
@@ -108,7 +115,13 @@ class PhoneRestSettingsTest {
         shadowOf(appOps).setMode(AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(),
             context.packageName, AppOpsManager.MODE_ALLOWED)
         controller.pause().stop().destroy()
+        // Finish the earlier activity's queued refresh before replacing persisted state.
+        // The replacement below is test setup, outside the tracker's normal mutation lock.
+        val refreshFinished = CountDownLatch(1)
+        runInBackground("PhoneRestSettingsTest") { refreshFinished.countDown() }
+        assertTrue(refreshFinished.await(5, TimeUnit.SECONDS))
         val now = System.currentTimeMillis()
+        assertTrue("The seeded day start must be after the epoch", now > 12 * 60 * 60_000L)
         PhoneRestStore(context).write(PhoneRestStore.Record(
             PhoneRestAnalyzer.Snapshot(cursorMillis = now,
                 currentDayStartMillis = now - 12 * 60 * 60_000L,
