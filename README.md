@@ -7,6 +7,7 @@ A small Android widget app that tracks how much of your configured day has passe
 ## What it does
 - Detects your day start automatically from on-device usage, or works entirely with manual starts
 - Handles day end times that go past midnight and daylight-saving transitions
+- Optionally follows phone-free rest instead of a fixed day end, with recent end-time comparisons
 - Shows progress, time remaining, and clear waiting/completed states
 - Supports bar, text, and combined widgets with customizable colors, borders, fonts, and gradients
 - Adds arbitrary daily checkpoints at a clock time or percentage of the day
@@ -18,10 +19,49 @@ A small Android widget app that tracks how much of your configured day has passe
 - Uses battery-friendly passive widget refreshes rather than frequent exact wake-up alarms
 
 ## Notes
-- Usage Access is optional and is only used for automatic day-start detection
+- Usage Access is optional and is used for automatic starts and the optional phone-free rest mode
 - Android 13 and newer ask for notification permission when an enabled checkpoint is saved
 - Checkpoint reminders are best-effort and can be delayed by Android battery restrictions
 - Tap the widget once to open settings
+
+## Days that follow phone-free rest
+
+Turn on **Follow phone-free rest** in the day-window settings (Android 9 or newer,
+with Usage Access). Your day can continue across midnight or beyond the previous
+day's end without resetting. No bedtime, wake-up time, or daytime-only schedule
+is required.
+
+After the configured time awake, locking the phone or turning the screen off for
+five minutes marks a **possible day end**. A longer phone-free interval confirms
+that same timestamp, five minutes after putting the phone down. The next sustained
+phone use starts the next day; brief checks during a confirmed rest do not.
+These are estimates of time away from the phone, not measurements of sleep.
+
+- **Rest needed to confirm an end** defaults to 3 hours and can be set from
+  30 minutes to 12 hours.
+- **Time awake before a rest can end the day** defaults to 8 hours and can be
+  set from 0 to 36 hours. It is checked when the phone is put down; a short
+  waking day does not become eligible merely by leaving the phone unused.
+- **Phone use needed to start a day** uses 1–60 minutes of uninterrupted
+  unlocked use (5 minutes by default).
+- **Exclude hours when usually awake** is optional and off by default. Any
+  range is allowed, including one crossing midnight. A rest overlapping that
+  range is rejected.
+- **Recent day ends** shows dated estimates and neutral earlier/later comparisons.
+  **Ignore latest rest estimate** removes a mistaken estimate and continues
+  the preceding day, which helps after a long break from the phone while awake.
+
+The widget compares the current day with the previous confirmed end's clock time.
+Passing that reference keeps the day active; the bar stays below 100% until a rest
+confirms the actual end. Until the first confirmed rest, text widgets show elapsed
+time and the bar has no reference to fill against. Percentage checkpoints and
+widget checkpoint markers pause in this mode because the final day length is not
+known in advance. Clock-time reminders keep their existing calendar-date behavior.
+
+Detection uses passive refreshes, so Android may display a result later while
+retaining the actual event timestamp. Only the last 30 completed rest estimates
+are stored locally; no app names or raw activity history are saved. See
+[the detection notes](docs/phone-rest-days.md) for gaps, corrections, and limits.
 
 ## Habit chains
 In a checkpoint editor, choose **Wait for checkpoint** and optionally a delay after completion. The clock time or day percentage is the earliest reminder time; a linked checkpoint waits until its predecessor is Done too. Skip and Snooze do not unlock later steps. Dependent steps must repeat on days covered by their predecessor.

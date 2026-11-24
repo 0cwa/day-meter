@@ -30,8 +30,15 @@ class CheckpointEngine(private val context: Context) {
     private val repository = DayRepository(context)
     private val store = CheckpointStore(context)
 
+    /** A phone-based day's final duration is only known after its rest is confirmed. */
+    fun isAvailable(checkpoint: Checkpoint): Boolean = checkpoint.enabled &&
+        (!repository.getPreferences().phoneRestEnabled || checkpoint.triggerType != CheckpointTriggerType.PERCENT)
+
     fun getWidgetMarkers(nowMillis: Long = System.currentTimeMillis()): List<WidgetCheckpointMarker> {
-        val checkpoints = store.getCheckpoints().filter { it.enabled && it.showOnWidget }
+        // The phone-based meter compares against a previous end; its rail is not a
+        // schedule for this day's unknown end. Clock reminders still run normally.
+        if (repository.getPreferences().phoneRestEnabled) return emptyList()
+        val checkpoints = store.getCheckpoints().filter { isAvailable(it) && it.showOnWidget }
         if (checkpoints.isEmpty()) return emptyList()
 
         val states = store.getStates()
@@ -88,7 +95,7 @@ class CheckpointEngine(private val context: Context) {
     }
 
     fun getNextVisibleOccurrence(nowMillis: Long = System.currentTimeMillis()): CheckpointOccurrence? {
-        val checkpoints = store.getCheckpoints().filter(Checkpoint::enabled)
+        val checkpoints = store.getCheckpoints().filter(::isAvailable)
         if (checkpoints.isEmpty()) return null
         val states = store.getStates()
 
@@ -115,7 +122,7 @@ class CheckpointEngine(private val context: Context) {
     }
 
     fun getNextSchedule(nowMillis: Long = System.currentTimeMillis()): CheckpointSchedule? {
-        val checkpoints = store.getCheckpoints().filter(Checkpoint::enabled)
+        val checkpoints = store.getCheckpoints().filter(::isAvailable)
         if (checkpoints.isEmpty()) return null
         val states = store.getStates()
         val candidates = mutableListOf<ScheduledCandidate>()
@@ -160,7 +167,7 @@ class CheckpointEngine(private val context: Context) {
     }
 
     fun getDueCheckpoints(nowMillis: Long = System.currentTimeMillis()): DueCheckpointResult {
-        val checkpoints = store.getCheckpoints().filter(Checkpoint::enabled)
+        val checkpoints = store.getCheckpoints().filter(::isAvailable)
         val states = store.getStates()
         val due = mutableListOf<CheckpointOccurrence>()
         val missed = mutableListOf<CheckpointOccurrence>()
@@ -205,7 +212,7 @@ class CheckpointEngine(private val context: Context) {
 
     /** The trigger's calendar date, including percentage triggers in overnight day windows. */
     fun getCurrentOccurrence(checkpoint: Checkpoint, nowMillis: Long = System.currentTimeMillis()): CheckpointOccurrence? =
-        candidateOccurrences(listOf(checkpoint), nowMillis, 0..0)
+        candidateOccurrences(listOf(checkpoint).filter(::isAvailable), nowMillis, 0..0)
             .firstOrNull { it.occurrenceDayId == formatDayId(nowMillis) }
             ?.let { occurrence ->
                 val readyAt = chainReadyAt(checkpoint, occurrence.occurrenceDayId, nowMillis)
@@ -221,7 +228,7 @@ class CheckpointEngine(private val context: Context) {
         val predecessorId = checkpoint.predecessorId ?: return 0L
         if (occurrenceDayId != formatDayId(nowMillis)) return null
         val predecessor = store.getCheckpoints().firstOrNull { it.id == predecessorId } ?: return null
-        if (!predecessor.enabled) return null
+        if (!isAvailable(predecessor)) return null
         val completion = store.getState(predecessorId, occurrenceDayId) ?: return null
         if (completion.status != CheckpointStatus.DONE) return null
         // Older versions stored Done without a completion timestamp. Immediate chains remain usable.
@@ -231,6 +238,7 @@ class CheckpointEngine(private val context: Context) {
     }
 
     private fun readyOccurrence(occurrence: CheckpointOccurrence, nowMillis: Long): CheckpointOccurrence? {
+        if (!isAvailable(occurrence.checkpoint)) return null
         if (occurrence.checkpoint.predecessorId == null) return occurrence
         val readyAt = chainReadyAt(occurrence.checkpoint, occurrence.occurrenceDayId, nowMillis) ?: return null
         val dueAt = maxOf(occurrence.dueAtMillis, readyAt)

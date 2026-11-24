@@ -7,8 +7,10 @@ import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
+import com.example.dayprogress.data.AppPreferences
 import com.example.dayprogress.data.DayRepository
 import com.example.dayprogress.data.UsageDetector
 import com.example.dayprogress.reminder.ReminderScheduler
@@ -39,7 +41,9 @@ object AlarmScheduler {
     @Synchronized
     fun scheduleWidgetUpdates(context: Context) {
         cancelWidgetUpdates(context)
-        if (!hasWidgets(context)) return
+        val tracksPhoneRest = AppPreferences(context).phoneRestEnabled &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && UsageDetector.hasUsageStatsPermission(context)
+        if (!hasWidgets(context) && !tracksPhoneRest) return
 
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val delayMillis = getNextUpdateDelayMillis(context).coerceAtLeast(MIN_BOUNDARY_DELAY_MILLIS)
@@ -68,6 +72,11 @@ object AlarmScheduler {
     private fun getNextUpdateDelayMillis(context: Context): Long {
         val repository = DayRepository(context)
         repository.checkAndResetDay()
+        if (repository.getPreferences().phoneRestEnabled) {
+            // Keep learning even after the previous end/reference and without a widget.
+            // This non-wakeup alarm may be delayed; usage timestamps provide the actual boundary.
+            return START_DETECTION_POLL_MILLIS
+        }
         val now = System.currentTimeMillis()
         val window = repository.getCurrentDayWindow(now)
         val start = repository.getEffectiveStartTime(now)
